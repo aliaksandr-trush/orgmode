@@ -184,6 +184,14 @@ function OrgMappings:org_columns_prev_value()
   end
 end
 
+---@param n number
+function OrgMappings:org_columns_select_value(n)
+  local view = self:_get_column_view()
+  if view then
+    view:select_value(n)
+  end
+end
+
 function OrgMappings:org_columns_view_value()
   local view = self:_get_column_view()
   if view then

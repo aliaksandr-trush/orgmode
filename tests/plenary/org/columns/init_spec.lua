@@ -349,6 +349,7 @@ describe('ColumnView', function()
     assert.are.equal('<S-M-Left>', maps.delete_column.default_map)
     assert.are.equal('<S-M-Right>', maps.insert_column.default_map)
     assert.are.equal('g?', maps.show_help.default_map)
+    assert.are.same({ '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' }, maps.select_value.default_map)
   end)
 
   it('includes column view mappings in help content', function()
@@ -489,6 +490,44 @@ describe('ColumnView', function()
 
     view:select_value(1)
     assert.are.equal('A', view.rows[1].headline:get_priority())
+  end)
+
+  it('selects a value using the number key mappings', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %25ITEM %TODO',
+      ':END:',
+    })
+    view.current_row = 1
+    view.current_col = 2
+    view:open()
+
+    vim.api.nvim_feedkeys('2', 'x', false)
+    assert.are.equal('DONE', view.rows[1].headline:get_todo())
+
+    vim.api.nvim_feedkeys('1', 'x', false)
+    assert.are.equal('TODO', view.rows[1].headline:get_todo())
+
+    view:quit()
+  end)
+
+  it('selects the 10th value with the 0 key', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %10Owner{Owner_ALL}',
+      ':Owner_ALL: A,B,C,D,E,F,G,H,I,J',
+      ':END:',
+    })
+    view.current_row = 1
+    view.current_col = 1
+    view:open()
+
+    vim.api.nvim_feedkeys('0', 'x', false)
+    assert.are.equal('J', view.rows[1].headline:get_property('owner'))
+
+    view:quit()
   end)
 
   it('cycles TODO from the empty state to the first keyword', function()

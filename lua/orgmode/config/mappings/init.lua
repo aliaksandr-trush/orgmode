@@ -451,6 +451,10 @@ return {
       'org_mappings.org_columns_prev_value',
       { opts = { desc = 'org prev value', help_desc = 'Select previous allowed value' } }
     ),
+    select_value = m.action(
+      'org_mappings.org_columns_select_value',
+      { opts = { desc = 'org select allowed value', help_desc = 'Select nth allowed value (1-9, 0 for 10th)' } }
+    ),
     view_value = m.action(
       'org_mappings.org_columns_view_value',
       { opts = { desc = 'org view value', help_desc = 'View full value of current cell' } }

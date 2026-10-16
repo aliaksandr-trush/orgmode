@@ -219,6 +219,7 @@ local DefaultConfig = {
       move_down = 'j',
       next_value = 'n',
       prev_value = 'p',
+      select_value = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' },
       view_value = 'v',
       edit_allowed = 'a',
       edit_value = 'e',

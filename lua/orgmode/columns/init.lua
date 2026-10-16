@@ -29,6 +29,19 @@ local function fit_to_width(text, width)
   return text .. string.rep(' ', width - display_width)
 end
 
+---Normalize a mapping definition (a single key or a list of keys) to a list.
+---@param mapping string|string[]|nil
+---@return string[]
+local function mapping_keys(mapping)
+  if type(mapping) == 'string' then
+    return { mapping }
+  end
+  if type(mapping) == 'table' then
+    return mapping
+  end
+  return {}
+end
+
 local ColumnView = {}
 ColumnView.__index = ColumnView
 
@@ -311,12 +324,43 @@ function ColumnView:_setup_mappings()
 
   for name, map in pairs(maps) do
     if map.map_entry then
-      map.map_entry
-        :with_handler(function()
-          return self[name](self)
-        end)
-        :attach(map.default_map, map.user_map, map.opts)
+      if name == 'select_value' then
+        self:_setup_select_value_mapping(map)
+      else
+        map.map_entry
+          :with_handler(function()
+            return self[name](self)
+          end)
+          :attach(map.default_map, map.user_map, map.opts)
+      end
     end
+  end
+end
+
+---Bind each configured key to `select_value` with the matching index, so that
+---`1`..`9` and `0` select the 1st..10th allowed value like in Emacs.
+---@param map table
+function ColumnView:_setup_select_value_mapping(map)
+  local keys = mapping_keys(map.user_map or map.default_map)
+  if #keys == 0 then
+    return
+  end
+
+  local opts = vim.deepcopy(map.opts or {})
+  local prefix = opts.prefix
+  opts.prefix = nil
+  opts.nowait = true
+  opts.silent = true
+  opts.buffer = self.bufnr
+  opts.desc = 'org select allowed value'
+
+  for idx, key in ipairs(keys) do
+    if prefix then
+      key = key:gsub('<prefix>', prefix)
+    end
+    vim.keymap.set('n', key, function()
+      self:select_value(idx)
+    end, opts)
   end
 end
 
@@ -656,11 +700,12 @@ function ColumnView:quit()
   -- Clean up column view keymaps
   local maps = config:get_mappings('column_view', self.bufnr)
   if maps then
-    for name, map in pairs(maps) do
+    for _, map in pairs(maps) do
       if map.map_entry then
-        -- Try both default_map and user_map, as the actual key might be either
-        for _, key in ipairs({ map.default_map, map.user_map }) do
-          if key then
+        -- Try both default_map and user_map, as the actual key might be either.
+        -- Mappings can be a single key or a list of keys.
+        for _, keys in ipairs({ mapping_keys(map.default_map), mapping_keys(map.user_map) }) do
+          for _, key in ipairs(keys) do
             pcall(vim.keymap.del, 'n', key, { buffer = self.bufnr })
           end
         end

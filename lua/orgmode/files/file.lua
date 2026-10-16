@@ -971,6 +971,11 @@ function OrgFile:get_directive(directive_name)
   return self:_get_directive(directive_name)
 end
 
+---@return string | nil
+function OrgFile:get_file_columns()
+  return self:get_directive('COLUMNS')
+end
+
 --- Get headline id or create a new one if it doesn't exist
 --- @return string
 function OrgFile:id_get_or_create()

@@ -236,6 +236,10 @@ return {
       'org_mappings.add_note',
       { opts = { desc = 'org add note', help_desc = 'Add a note to the current headline' } }
     ),
+    org_columns = m.action(
+      'org_mappings.org_columns',
+      { opts = { desc = 'org columns', help_desc = 'Toggle columns view' } }
+    ),
     org_cycle = m.action('org_mappings.cycle', { opts = { desc = 'org toggle fold', help_desc = 'Toggle folding' } }),
     org_global_cycle = m.action(
       'org_mappings.global_cycle',
@@ -416,6 +420,80 @@ return {
     around_subtree_from_root = m.text_object(
       'around_subtree_from_root',
       { help_desc = 'Select around subtree from root headline' }
+    ),
+  },
+  column_view = {
+    quit = m.action(
+      'org_mappings.org_columns_quit',
+      { opts = { desc = 'org quit column view', help_desc = 'Quit column view' } }
+    ),
+    move_left = m.action(
+      'org_mappings.org_columns_move_left',
+      { opts = { desc = 'org move to previous column', help_desc = 'Move to previous column' } }
+    ),
+    move_right = m.action(
+      'org_mappings.org_columns_move_right',
+      { opts = { desc = 'org move to next column', help_desc = 'Move to next column' } }
+    ),
+    move_up = m.action(
+      'org_mappings.org_columns_move_up',
+      { opts = { desc = 'org move row up', help_desc = 'Move to previous row' } }
+    ),
+    move_down = m.action(
+      'org_mappings.org_columns_move_down',
+      { opts = { desc = 'org move row down', help_desc = 'Move to next row' } }
+    ),
+    next_value = m.action(
+      'org_mappings.org_columns_next_value',
+      { opts = { desc = 'org next value', help_desc = 'Select next allowed value' } }
+    ),
+    prev_value = m.action(
+      'org_mappings.org_columns_prev_value',
+      { opts = { desc = 'org prev value', help_desc = 'Select previous allowed value' } }
+    ),
+    view_value = m.action(
+      'org_mappings.org_columns_view_value',
+      { opts = { desc = 'org view value', help_desc = 'View full value of current cell' } }
+    ),
+    edit_allowed = m.action(
+      'org_mappings.org_columns_edit_allowed',
+      { opts = { desc = 'org edit allowed', help_desc = 'Edit allowed values for current column' } }
+    ),
+    edit_value = m.action(
+      'org_mappings.org_columns_edit_value',
+      { opts = { desc = 'org edit value', help_desc = 'Edit value at point' } }
+    ),
+    toggle_or_quit = m.action(
+      'org_mappings.org_columns_toggle_or_quit',
+      { opts = { desc = 'org toggle checkbox or quit', help_desc = 'Toggle checkbox or quit column view' } }
+    ),
+    narrow_column = m.action(
+      'org_mappings.org_columns_narrow_column',
+      { opts = { desc = 'org narrow column', help_desc = 'Make current column narrower' } }
+    ),
+    widen_column = m.action(
+      'org_mappings.org_columns_widen_column',
+      { opts = { desc = 'org widen column', help_desc = 'Make current column wider' } }
+    ),
+    insert_column = m.action(
+      'org_mappings.org_columns_insert_column',
+      { opts = { desc = 'org insert column', help_desc = 'Insert new column' } }
+    ),
+    delete_column = m.action(
+      'org_mappings.org_columns_delete_column',
+      { opts = { desc = 'org delete column', help_desc = 'Delete current column' } }
+    ),
+    move_column_left = m.action(
+      'org_mappings.org_columns_move_column_left',
+      { opts = { desc = 'org move column left', help_desc = 'Move current column left' } }
+    ),
+    move_column_right = m.action(
+      'org_mappings.org_columns_move_column_right',
+      { opts = { desc = 'org move column right', help_desc = 'Move current column right' } }
+    ),
+    show_help = m.action(
+      'org_mappings.show_help',
+      { args = { 'column_view' }, opts = { desc = 'org show help', help_desc = 'Show this help' } }
     ),
   },
 }

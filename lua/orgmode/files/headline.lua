@@ -658,6 +658,9 @@ function Headline:get_parent_headline()
   end
 
   local headline = parent_section:field('headline')[1]
+  if not headline then
+    return nil
+  end
   return Headline:new(headline, self.file)
 end
 

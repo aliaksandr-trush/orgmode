@@ -11,6 +11,12 @@ function Help.show(type)
     Help._generate_tree()
   end
   local content = Help.prepare_content(type)
+
+  -- Ensure content is not empty
+  if #content == 0 then
+    content = { 'No help available for ' .. type }
+  end
+
   local longest = utils.reduce(content, function(acc, item)
     return math.max(acc, item:len())
   end, 0)
@@ -33,9 +39,17 @@ function Help.show(type)
   vim.api.nvim_buf_set_name(Help.buf, 'orghelp')
   vim.api.nvim_set_option_value('filetype', 'orghelp', { buf = Help.buf })
   vim.api.nvim_set_option_value('bufhidden', 'wipe', { buf = Help.buf })
+
+  -- Set buffer content BEFORE creating window
+  vim.api.nvim_buf_set_lines(Help.buf, 0, -1, true, content)
+
   Help.win = vim.api.nvim_open_win(Help.buf, true, window_opts)
 
-  vim.api.nvim_buf_set_lines(Help.buf, 0, -1, true, content)
+  -- Ensure window uses the correct buffer and is focused
+  if Help.win and vim.api.nvim_win_is_valid(Help.win) then
+    vim.api.nvim_win_set_buf(Help.win, Help.buf)
+    vim.api.nvim_set_current_win(Help.win)
+  end
 
   vim.api.nvim_set_option_value('winhl', 'Normal:Normal', { win = Help.win })
   vim.api.nvim_set_option_value('wrap', false, { win = Help.win })
@@ -91,7 +105,7 @@ function Help._generate_mappings(buffer_type, title)
   }
   local mappings = config.mappings
   for _, item in ipairs(Help.tree[buffer_type]) do
-    local maps = mappings[buffer_type][item.key]
+    local maps = mappings[buffer_type] and mappings[buffer_type][item.key]
     if type(maps) == 'table' then
       maps = table.concat(maps, ', ')
     end
@@ -100,10 +114,16 @@ function Help._generate_mappings(buffer_type, title)
       goto continue
     end
 
-    table.insert(
-      content,
-      string.format('  `%-12s` - %s', string.gsub(maps, '<prefix>', mappings.prefix), item.description)
-    )
+    if type(maps) == 'function' then
+      maps = '<function>'
+    end
+
+    if maps then
+      table.insert(
+        content,
+        string.format('  `%-12s` - %s', string.gsub(maps, '<prefix>', mappings.prefix), item.description)
+      )
+    end
 
     ::continue::
   end
@@ -119,6 +139,7 @@ function Help.prepare_content(buffer_type)
     note = { title = 'Note', include_org_mappings = true },
     agenda = { title = 'Agenda', include_org_mappings = false },
     edit_src = { title = 'Edit src', include_org_mappings = false },
+    column_view = { title = 'Column View', include_org_mappings = false },
   }
   local max_height = vim.o.lines - 2
   local title = opts_by_type[buffer_type].title

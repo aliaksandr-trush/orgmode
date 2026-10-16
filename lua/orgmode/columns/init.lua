@@ -1,0 +1,1000 @@
+local utils = require('orgmode.utils')
+local config = require('orgmode.config')
+local Summary = require('orgmode.columns.summary')
+local Date = require('orgmode.objects.date')
+local Duration = require('orgmode.objects.duration')
+
+---Pad or truncate `text` to exactly `width` display columns.
+---@param text string
+---@param width number
+---@return string
+local function fit_to_width(text, width)
+  local display_width = vim.api.nvim_strwidth(text)
+  if display_width > width then
+    local truncated = ''
+    local used = 0
+    local char_count = vim.fn.strchars(text)
+    for i = 0, char_count - 1 do
+      local char = vim.fn.strcharpart(text, i, 1)
+      local char_width = vim.api.nvim_strwidth(char)
+      if used + char_width > width - 1 then
+        break
+      end
+      used = used + char_width
+      truncated = truncated .. char
+    end
+    text = truncated .. '…'
+    display_width = vim.api.nvim_strwidth(text)
+  end
+  return text .. string.rep(' ', width - display_width)
+end
+
+local ColumnView = {}
+ColumnView.__index = ColumnView
+
+---@param opts OrgColumnViewOpts
+---@return OrgColumnView
+function ColumnView:new(opts)
+  local ns = vim.api.nvim_create_namespace('orgmode_column_view')
+  local data = {
+    files = opts.files,
+    headlines = opts.headlines or {},
+    columns = opts.columns_def.columns or {},
+    allowed_values = opts.columns_def.allowed_values or {},
+    rows = {},
+    bufnr = opts.bufnr or 0,
+    winid = opts.winid or 0,
+    ns = ns,
+    current_row = 1,
+    current_col = 1,
+    original_winid = vim.api.nvim_get_current_win(),
+    original_bufnr = vim.api.nvim_get_current_buf(),
+    _headline_to_row = {},
+    _clocksum_cache = {},
+    _clocksum_t_cache = {},
+    _widths = nil,
+    on_quit = opts.on_quit,
+  }
+  local this = setmetatable(data, ColumnView)
+  this:_build_rows()
+  this:_resolve_allowed_values()
+  return this
+end
+
+---@private
+function ColumnView:_resolve_allowed_values()
+  -- Resolve property references in allowed_values to actual values
+  -- e.g., { "Owner_ALL" } -> { "Alice", "Bob", "Carol" }
+  local resolved = {}
+  for key, vals in pairs(self.allowed_values) do
+    if #vals == 1 and not vals[1]:match('^%[') then
+      -- This looks like a property reference (e.g., "Owner_ALL")
+      local prop_name = vals[1]:lower()
+      local values = {}
+      for _, hl in ipairs(self.headlines) do
+        local prop_val = hl:get_property(prop_name)
+        if prop_val and prop_val ~= '' then
+          -- Split by comma
+          for v in prop_val:gmatch('[^,]+') do
+            v = vim.trim(v)
+            if v ~= '' then
+              table.insert(values, v)
+            end
+          end
+          if #values > 0 then
+            break
+          end
+        end
+      end
+      if #values > 0 then
+        resolved[key] = values
+      else
+        resolved[key] = vals -- fallback to original
+      end
+    else
+      resolved[key] = vals
+    end
+  end
+  self.allowed_values = resolved
+end
+
+function ColumnView:_build_rows()
+  self.rows = {}
+  self._headline_to_row = {}
+  self._clocksum_cache = {}
+  self._clocksum_t_cache = {}
+  self._widths = nil
+  local visited = {}
+
+  local function add_headlines(headlines, level)
+    for _, hl in ipairs(headlines) do
+      local hl_key = hl.file.filename .. ':' .. hl:get_range().start_line
+      if not visited[hl_key] then
+        visited[hl_key] = true
+
+        local row = self:_create_row(hl, level)
+        table.insert(self.rows, row)
+        self._headline_to_row[hl] = #self.rows
+
+        local children = hl:get_child_headlines()
+        if #children > 0 then
+          add_headlines(children, level + 1)
+        end
+      end
+    end
+  end
+
+  add_headlines(self.headlines, 1)
+end
+
+---@param headline OrgHeadline
+---@param level number
+---@return OrgColumnViewRow
+function ColumnView:_create_row(headline, level)
+  local cells = {}
+  for _, col in ipairs(self.columns) do
+    local value = self:_get_cell_value(headline, col)
+    local summary = nil
+    if col.summary_type and headline:has_child_headlines() then
+      -- Aggregate the children's rendered values so that special columns
+      -- (AGE, CLOCKSUM, ...) are summarized just like property columns.
+      local values = {}
+      for _, child in ipairs(headline:get_child_headlines()) do
+        table.insert(values, self:_get_cell_value(child, col))
+      end
+      summary = Summary.compute(values, col.summary_type)
+    end
+    table.insert(cells, {
+      headline = headline,
+      column = col,
+      value = value,
+      summary = summary,
+    })
+  end
+
+  return {
+    headline = headline,
+    cells = cells,
+    level = level,
+    is_parent = headline:has_child_headlines(),
+  }
+end
+
+---@param headline OrgHeadline
+---@param column OrgColumnSpec
+---@return string
+function ColumnView:_get_cell_value(headline, column)
+  if column.is_special then
+    return self:_get_special_value(headline, column.name)
+  end
+  local prop = headline:get_property(column.name:lower())
+  return prop or ''
+end
+
+---@param headline OrgHeadline
+---@param name string
+---@return string
+function ColumnView:_get_special_value(headline, name)
+  if name == 'ITEM' then
+    local indent = string.rep('  ', headline:get_level() - 1)
+    local todo = headline:get_todo() or ''
+    local title = headline:get_title()
+    if todo ~= '' then
+      title = todo .. ' ' .. title
+    end
+    local priority = headline:get_priority()
+    if priority ~= '' then
+      title = '[#' .. priority .. '] ' .. title
+    end
+    return indent .. title
+  elseif name == 'CLOCKSUM' then
+    return self:_get_clocksum(headline, false)
+  elseif name == 'CLOCKSUM_T' then
+    return self:_get_clocksum(headline, true)
+  elseif name == 'AGE' then
+    local created = headline:get_property('CREATED')
+    if created then
+      local d = Date.from_string(created)
+      if d then
+        local minutes = math.max(0, math.floor((os.time() - d.timestamp) / 60))
+        return Duration.from_minutes(minutes):to_string()
+      end
+    end
+    return ''
+  elseif name == 'TAGS' then
+    return headline:tags_to_string()
+  elseif name == 'TODO' then
+    return headline:get_todo() or ''
+  elseif name == 'PRIORITY' then
+    local p = headline:get_priority()
+    return p ~= '' and ('[#' .. p .. ']') or ''
+  elseif name == 'CATEGORY' then
+    return headline:get_category()
+  elseif name == 'SCHEDULED' then
+    local scheduled = headline:get_scheduled_date()
+    if scheduled then
+      return scheduled:to_date_string()
+    end
+    return ''
+  elseif name == 'DEADLINE' then
+    local deadline = headline:get_deadline_date()
+    if deadline then
+      return deadline:to_date_string()
+    end
+    return ''
+  end
+  return ''
+end
+
+---Sum the CLOCK intervals of a headline and all of its descendants.
+---`today_only` restricts the sum to clock intervals of the current day.
+---@param headline OrgHeadline
+---@param today_only boolean
+---@return string
+function ColumnView:_get_clocksum(headline, today_only)
+  local total_minutes = self:_compute_clocksum(headline, today_only)
+  if total_minutes <= 0 then
+    return ''
+  end
+  return Duration.from_minutes(total_minutes):to_string('HH:MM')
+end
+
+---Recursively compute the subtree clock total for `headline`, memoizing every
+---visited headline so that the whole view is computed in a single pass.
+---@param headline OrgHeadline
+---@param today_only boolean
+---@return number
+function ColumnView:_compute_clocksum(headline, today_only)
+  local cache = today_only and self._clocksum_t_cache or self._clocksum_cache
+  local cached = cache[headline]
+  if cached ~= nil then
+    return cached
+  end
+
+  local total_minutes = 0
+  local logbook = headline:get_logbook()
+  if logbook then
+    if today_only then
+      local from = Date.today():start_of('day')
+      local to = Date.today():end_of('day')
+      total_minutes = total_minutes + logbook:get_total_minutes(from, to)
+      local active = logbook:get_active()
+      if active and active.start_time:is_today() then
+        total_minutes = total_minutes + math.floor((Date.now().timestamp - active.start_time.timestamp) / 60)
+      end
+    else
+      total_minutes = total_minutes + logbook:get_total_with_active().minutes
+    end
+  end
+
+  for _, child in ipairs(headline:get_child_headlines()) do
+    total_minutes = total_minutes + self:_compute_clocksum(child, today_only)
+  end
+
+  cache[headline] = total_minutes
+  return total_minutes
+end
+
+function ColumnView:open()
+  self.bufnr = vim.api.nvim_get_current_buf()
+  self.winid = vim.api.nvim_get_current_win()
+
+  self._original_winbar = vim.wo[self.winid].winbar
+  self._opened = true
+  vim.wo[self.winid].cursorline = true
+  self:_setup_mappings()
+  self:_render()
+
+  self._leave_autocmd_id = vim.api.nvim_create_autocmd({ 'WinLeave', 'BufLeave' }, {
+    buffer = self.bufnr,
+    callback = function()
+      vim.schedule(function()
+        -- Do not quit when a transient floating window (help popup, menu,
+        -- completion, etc.) takes focus; keep the column view alive underneath.
+        if vim.api.nvim_win_is_valid(self.winid) then
+          local win_config = vim.api.nvim_win_get_config(vim.api.nvim_get_current_win())
+          if win_config.relative ~= '' then
+            return
+          end
+        end
+        self:quit()
+      end)
+    end,
+  })
+end
+
+function ColumnView:_setup_mappings()
+  local maps = config:get_mappings('column_view', self.bufnr)
+  if not maps then
+    return
+  end
+
+  for name, map in pairs(maps) do
+    if map.map_entry then
+      map.map_entry
+        :with_handler(function()
+          return self[name](self)
+        end)
+        :attach(map.default_map, map.user_map, map.opts)
+    end
+  end
+end
+
+---The text a cell displays: its value, plus the computed summary when present.
+---@param cell OrgColumnViewCell
+---@return string
+function ColumnView:_cell_content(cell)
+  if not cell.summary then
+    return cell.value
+  end
+  local summary_text = 'Σ=' .. cell.summary
+  if cell.value == '' then
+    return summary_text
+  end
+  return cell.value .. ' ' .. summary_text
+end
+
+---Compute the display width of every column, fitting both the header title and
+---the rendered cell contents. Computed once and reused by the header and all
+---rows so that the table stays aligned.
+---@return number[]
+function ColumnView:_compute_widths()
+  local widths = {}
+  for col_idx, col in ipairs(self.columns) do
+    local width
+    if col.width then
+      width = col.width
+    else
+      width = math.max(vim.api.nvim_strwidth(col.title), 10)
+      for _, row in ipairs(self.rows) do
+        local cell = row.cells[col_idx]
+        if cell then
+          width = math.max(width, vim.api.nvim_strwidth(self:_cell_content(cell)))
+        end
+      end
+    end
+    widths[col_idx] = math.min(width, 50)
+  end
+  return widths
+end
+
+---@param col_idx number
+---@return number
+function ColumnView:_get_width(col_idx)
+  if not self._widths then
+    self._widths = self:_compute_widths()
+  end
+  return self._widths[col_idx]
+end
+
+function ColumnView:_render()
+  vim.api.nvim_buf_clear_namespace(self.bufnr, self.ns, 0, -1)
+
+  -- Render the header in the window bar so it stays visible while scrolling.
+  if self._opened and self.winid and vim.api.nvim_win_is_valid(self.winid) then
+    vim.wo[self.winid].winbar = self:_build_winbar()
+  end
+
+  for row_idx, row in ipairs(self.rows) do
+    local line_nr = row.headline:get_range().start_line
+    local virt_text = self:_build_virt_text(row, row_idx)
+    if #virt_text > 0 then
+      vim.api.nvim_buf_set_extmark(self.bufnr, self.ns, line_nr - 1, 0, {
+        virt_text = virt_text,
+        virt_text_pos = 'overlay',
+        priority = 10000,
+      })
+    end
+  end
+
+  self:_highlight_current_cell()
+end
+
+---@return table[]
+function ColumnView:_build_header_virt_text()
+  local parts = {}
+
+  for col_idx, col in ipairs(self.columns) do
+    local content = fit_to_width(col.title, self:_get_width(col_idx))
+
+    table.insert(parts, { '│', '@org.column.border' })
+    table.insert(parts, { ' ' .. content .. ' ', '@org.column.header' })
+  end
+
+  table.insert(parts, { '│', '@org.column.border' })
+
+  return parts
+end
+
+---Build the window bar string for the header, keeping it always visible while
+---the buffer scrolls. Uses the same parts as the buffer header so the columns
+---stay aligned.
+---@return string
+function ColumnView:_build_winbar()
+  local chunks = {}
+  for _, part in ipairs(self:_build_header_virt_text()) do
+    local text = part[1]:gsub('%%', '%%%%')
+    if part[2] then
+      text = '%#' .. part[2] .. '#' .. text
+    end
+    table.insert(chunks, text)
+  end
+  return table.concat(chunks)
+end
+
+---@param row OrgColumnViewRow
+---@param row_idx number
+---@return table[]
+function ColumnView:_build_virt_text(row, row_idx)
+  local parts = {}
+  local is_current_row = row_idx == self.current_row
+
+  for col_idx, cell in ipairs(row.cells) do
+    local is_current_col = col_idx == self.current_col
+    local content = fit_to_width(self:_cell_content(cell), self:_get_width(col_idx))
+
+    local is_current_cell = is_current_row and is_current_col
+    local hl_group = cell.summary and '@org.column.summary' or '@org.column.value'
+    if is_current_cell then
+      hl_group = '@org.column.current'
+    end
+
+    table.insert(parts, { '│', '@org.column.border' })
+    table.insert(parts, { ' ' .. content .. ' ', hl_group })
+  end
+
+  table.insert(parts, { '│', '@org.column.border' })
+
+  return parts
+end
+
+function ColumnView:_highlight_current_cell()
+  -- Current cell highlighting is handled in _build_virt_text
+end
+
+function ColumnView:move_left()
+  if self.current_col > 1 then
+    self.current_col = self.current_col - 1
+    self:_render()
+  end
+end
+
+function ColumnView:move_right()
+  if self.current_col < #self.columns then
+    self.current_col = self.current_col + 1
+    self:_render()
+  end
+end
+
+function ColumnView:move_up()
+  if self.current_row > 1 then
+    self.current_row = self.current_row - 1
+    local row = self.rows[self.current_row]
+    local line = row.headline:get_range().start_line
+    vim.api.nvim_win_set_cursor(self.winid, { line, 0 })
+    self:_render()
+  end
+end
+
+function ColumnView:move_down()
+  if self.current_row < #self.rows then
+    self.current_row = self.current_row + 1
+    local row = self.rows[self.current_row]
+    local line = row.headline:get_range().start_line
+    vim.api.nvim_win_set_cursor(self.winid, { line, 0 })
+    self:_render()
+  end
+end
+
+function ColumnView:next_value()
+  self:_change_value(1)
+end
+
+function ColumnView:prev_value()
+  self:_change_value(-1)
+end
+
+---Candidate values for a column, used by numbered selection and cycling.
+---Returns nil when the column has no selectable values (e.g. ITEM).
+---@param col OrgColumnSpec
+---@return string[]|nil
+function ColumnView:_allowed_values_for(col)
+  if col.name == 'TODO' then
+    local values = {}
+    for _, todo in ipairs(config:get_todo_keywords():all()) do
+      table.insert(values, todo.value)
+    end
+    return values
+  elseif col.name == 'PRIORITY' then
+    local range = config:get_priority_range()
+    local PriorityState = require('orgmode.objects.priority_state')
+    local values = {}
+    local current = PriorityState:new(range.highest, range)
+    table.insert(values, current.priority)
+    while current.priority ~= range.lowest do
+      current:decrease()
+      table.insert(values, current.priority)
+    end
+    return values
+  end
+
+  local allowed = self.allowed_values[col.name .. '_ALL']
+  if allowed and #allowed > 0 then
+    return allowed
+  end
+
+  if col.name:upper() == 'ITEM' then
+    return nil
+  end
+  return { '[ ]', '[X]' }
+end
+
+function ColumnView:select_value(n)
+  -- n is 1-9 or 0 (for 10th)
+  if n == 0 then
+    n = 10
+  end
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+
+  local cell = row.cells[self.current_col]
+  if not cell then
+    return
+  end
+
+  local allowed = self:_allowed_values_for(cell.column)
+  if not allowed then
+    return
+  end
+
+  if n <= #allowed then
+    self:_set_cell_value(cell, allowed[n])
+  end
+end
+
+function ColumnView:_change_value(direction)
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+
+  local cell = row.cells[self.current_col]
+  if not cell then
+    return
+  end
+
+  local col = cell.column
+  local headline = row.headline
+
+  -- TODO and PRIORITY cycle through their configured sequences, which also
+  -- handles the "no keyword/priority" state correctly.
+  if col.name == 'TODO' then
+    local TodoState = require('orgmode.objects.todo_state')
+    local ts = TodoState:new({ current_state = headline:get_todo() })
+    local next_state = direction > 0 and ts:get_next() or ts:get_prev()
+    if next_state then
+      headline:set_todo(next_state.value)
+      self:refresh()
+    end
+    return
+  elseif col.name == 'PRIORITY' then
+    local PriorityState = require('orgmode.objects.priority_state')
+    local ps = PriorityState:new(headline:get_priority(), config:get_priority_range())
+    local value = direction > 0 and ps:increase() or ps:decrease()
+    headline:set_priority(value)
+    self:refresh()
+    return
+  end
+
+  local allowed = self.allowed_values[col.name .. '_ALL']
+  if not allowed or #allowed == 0 then
+    if col.name:upper() == 'ITEM' then
+      return
+    end
+    allowed = { '[ ]', '[X]' }
+  end
+
+  local current = cell.value
+  local idx = 1
+  for i, v in ipairs(allowed) do
+    if v == current then
+      idx = i
+      break
+    end
+  end
+
+  idx = idx + direction
+  if idx < 1 then
+    idx = #allowed
+  end
+  if idx > #allowed then
+    idx = 1
+  end
+
+  local new_value = allowed[idx]
+  self:_set_cell_value(cell, new_value)
+end
+
+---@param cell OrgColumnViewCell
+---@param value string
+function ColumnView:_set_cell_value(cell, value)
+  local headline = cell.headline
+  local col = cell.column
+
+  if col.is_special then
+    if col.name == 'TODO' then
+      headline:set_todo(value)
+    elseif col.name == 'PRIORITY' then
+      -- Allowed values carry the display form `[#A]`; strip it for storage.
+      headline:set_priority(value:match('%[#(.-)%]') or value)
+    end
+  else
+    headline:set_property(col.name:lower(), value)
+  end
+
+  cell.value = self:_get_cell_value(headline, col)
+  self:refresh()
+end
+
+function ColumnView:quit()
+  -- A scheduled leave callback may fire after the view was already closed;
+  -- ignore it so it cannot restore a stale window bar over a newer view.
+  if not self._opened then
+    return
+  end
+  if self._leave_autocmd_id then
+    pcall(vim.api.nvim_del_autocmd, self._leave_autocmd_id)
+    self._leave_autocmd_id = nil
+  end
+  vim.api.nvim_buf_clear_namespace(self.bufnr, self.ns, 0, -1)
+  if self.winid and vim.api.nvim_win_is_valid(self.winid) then
+    vim.wo[self.winid].winbar = self._original_winbar or ''
+  end
+  self._opened = false
+  -- Clean up column view keymaps
+  local maps = config:get_mappings('column_view', self.bufnr)
+  if maps then
+    for name, map in pairs(maps) do
+      if map.map_entry then
+        -- Try both default_map and user_map, as the actual key might be either
+        for _, key in ipairs({ map.default_map, map.user_map }) do
+          if key then
+            pcall(vim.keymap.del, 'n', key, { buffer = self.bufnr })
+          end
+        end
+      end
+    end
+  end
+  if self.on_quit then
+    self.on_quit()
+  end
+  if vim.api.nvim_win_is_valid(self.original_winid) and vim.api.nvim_get_current_win() == self.winid then
+    vim.api.nvim_set_current_win(self.original_winid)
+  end
+end
+
+function ColumnView:view_value()
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+  local cell = row.cells[self.current_col]
+  if not cell then
+    return
+  end
+
+  local full_value = cell.value
+  if cell.summary then
+    full_value = full_value .. '\n\nSummary: ' .. cell.summary
+  end
+
+  utils.echo_info(full_value, nil, true)
+end
+
+function ColumnView:edit_allowed()
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+  local cell = row.cells[self.current_col]
+  if not cell then
+    return
+  end
+
+  local col = cell.column
+  local prop_name = col.name .. '_ALL'
+  local prop_key = prop_name:lower()
+
+  -- Per the Org manual, if the allowed values are defined somewhere in the
+  -- hierarchy, the edited list is stored in that entry. Otherwise it is stored
+  -- in the first entry that is part of the current column view.
+  local target = self.rows[1] and self.rows[1].headline or row.headline
+  local current = row.headline
+  while current do
+    local own = current:get_own_properties()
+    if own and own[prop_key] then
+      target = current
+      break
+    end
+    current = current:get_parent_headline()
+  end
+
+  -- Get current allowed values from property
+  local current_allowed = self.allowed_values[prop_name] or {}
+
+  -- If no property values, collect unique values from the column in all rows
+  if #current_allowed == 0 then
+    local seen = {}
+    for _, r in ipairs(self.rows) do
+      local val = r.cells[self.current_col].value
+      if val and val ~= '' and not seen[val] then
+        seen[val] = true
+        table.insert(current_allowed, val)
+      end
+    end
+  end
+
+  local input = vim.fn.input('Allowed values (comma separated): ', table.concat(current_allowed, ','))
+  if not input or vim.trim(input) == '' then
+    return
+  end
+
+  local new_allowed = vim.split(input, ',', { trimempty = true })
+  for i, v in ipairs(new_allowed) do
+    new_allowed[i] = vim.trim(v)
+  end
+
+  self.allowed_values[prop_name] = new_allowed
+
+  target:set_property(prop_name, table.concat(new_allowed, ','))
+
+  self:refresh()
+end
+
+---Edit the value at point using appropriate interface for the column type
+function ColumnView:edit_value()
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+  local cell = row.cells[self.current_col]
+  if not cell then
+    return
+  end
+
+  local col = cell.column
+  local headline = row.headline
+
+  -- Special column types with custom editors
+  if col.name == 'TODO' then
+    local todo_state = require('orgmode.objects.todo_state')
+    local ts = todo_state:new({ current_state = headline:get_todo() })
+    local next_state = ts:open_fast_access()
+    if next_state then
+      headline:set_todo(next_state.value)
+      cell.value = self:_get_cell_value(headline, col)
+      self:refresh()
+    end
+    return
+  elseif col.name == 'PRIORITY' then
+    local PriorityState = require('orgmode.objects.priority_state')
+    local ps = PriorityState:new(headline:get_priority(), config:get_priority_range())
+    local new_prio = ps:prompt_user()
+    if new_prio then
+      headline:set_priority(new_prio)
+      cell.value = self:_get_cell_value(headline, col)
+      self:refresh()
+    end
+    return
+  elseif col.name == 'TAGS' then
+    -- Use existing set_tags which has tag completion
+    local current_tags = utils.tags_to_string(headline:get_own_tags())
+    local tags = vim.fn.input('Tags: ', current_tags, function(arg_lead)
+      return utils.prompt_autocomplete(arg_lead, self.files:get_tags())
+    end)
+    if tags then
+      headline:set_tags(tags)
+      cell.value = self:_get_cell_value(headline, col)
+      self:refresh()
+    end
+    return
+  end
+
+  -- For regular property columns, use input with allowed values completion
+  local prop_name = col.name
+  local current_val = cell.value
+  local allowed = self.allowed_values[col.name .. '_ALL']
+
+  if allowed and #allowed > 0 then
+    -- Use vim.ui.select for selection from allowed values (Neovim 0.6+)
+    local items = vim.deepcopy(allowed)
+    table.insert(items, 1, '') -- Allow empty/clear
+    if vim.ui.select then
+      vim.ui.select(items, {
+        prompt = ('Select %s: '):format(col.title or col.name),
+        format_item = function(item)
+          return item == '' and '(clear)' or item
+        end,
+      }, function(choice)
+        if choice then
+          headline:set_property(prop_name, choice)
+          cell.value = self:_get_cell_value(headline, col)
+          self:refresh()
+        end
+      end)
+    else
+      -- Fallback for older Neovim: use input with number selection
+      local prompt = ('Select %s:\n'):format(col.title or col.name)
+      for i, item in ipairs(items) do
+        local label = item == '' and '(clear)' or item
+        prompt = prompt .. string.format('\n  %d. %s', i, label)
+      end
+      prompt = prompt .. '\nEnter number: '
+      local choice = vim.fn.input(prompt)
+      local idx = tonumber(choice)
+      if idx and idx >= 1 and idx <= #items then
+        local choice = items[idx]
+        headline:set_property(prop_name, choice)
+        cell.value = self:_get_cell_value(headline, col)
+        self:refresh()
+      end
+    end
+    return
+  else
+    -- Free text input without completion
+    local input = vim.fn.input(('Edit %s: '):format(col.title or col.name), current_val)
+    if not input or vim.trim(input) == '' then
+      return
+    end
+    headline:set_property(prop_name, input)
+    cell.value = self:_get_cell_value(headline, col)
+    self:refresh()
+  end
+end
+
+---Toggle checkbox or quit column view (C-c C-c)
+function ColumnView:toggle_or_quit()
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+  local cell = row.cells[self.current_col]
+  if not cell then
+    return
+  end
+
+  local col = cell.column
+  local headline = row.headline
+
+  -- Toggle a checkbox value. Only property columns can hold checkboxes; the
+  -- ITEM column is the headline title and must not cycle the TODO state here.
+  if not col.is_special and cell.value:match('^%s*%[.%]') then
+    local new_val = cell.value:gsub('%[(.)%]', function(inner)
+      return inner:upper() == 'X' and '[ ]' or '[X]'
+    end, 1)
+    headline:set_property(col.name:lower(), new_val)
+    cell.value = new_val
+    self:refresh()
+    return
+  end
+
+  -- Otherwise quit the column view.
+  self:quit()
+end
+
+function ColumnView:narrow_column()
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+  local cell = row.cells[self.current_col]
+  if not cell then
+    return
+  end
+
+  local col = cell.column
+  local width = col.width or self:_get_width(self.current_col)
+  if width > 5 then
+    col.width = width - 1
+    self._widths = nil
+    self:_render()
+  end
+end
+
+function ColumnView:widen_column()
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+  local cell = row.cells[self.current_col]
+  if not cell then
+    return
+  end
+
+  local col = cell.column
+  local width = col.width or self:_get_width(self.current_col)
+  col.width = math.min(width + 1, 50)
+  self._widths = nil
+  self:_render()
+end
+
+function ColumnView:insert_column()
+  local name = vim.fn.input('Column name: ')
+  if not name or vim.trim(name) == '' then
+    return
+  end
+
+  local width_input = vim.fn.input('Width (optional): ')
+  local width = tonumber(width_input)
+
+  local new_col = {
+    name = name:upper(),
+    width = width,
+    title = name,
+    summary_type = nil,
+    allowed_values = nil,
+    is_special = false,
+  }
+
+  table.insert(self.columns, self.current_col, new_col)
+  self:_rebuild_rows()
+  self:_render()
+end
+
+function ColumnView:delete_column()
+  if #self.columns <= 1 then
+    return
+  end
+  table.remove(self.columns, self.current_col)
+  if self.current_col > #self.columns then
+    self.current_col = #self.columns
+  end
+  self:_rebuild_rows()
+  self:_render()
+end
+
+function ColumnView:move_column_left()
+  if self.current_col > 1 then
+    local col = table.remove(self.columns, self.current_col)
+    table.insert(self.columns, self.current_col - 1, col)
+    self.current_col = self.current_col - 1
+    self:_rebuild_rows()
+    self:_render()
+  end
+end
+
+function ColumnView:move_column_right()
+  if self.current_col < #self.columns then
+    local col = table.remove(self.columns, self.current_col)
+    table.insert(self.columns, self.current_col + 1, col)
+    self.current_col = self.current_col + 1
+    self:_rebuild_rows()
+    self:_render()
+  end
+end
+
+function ColumnView:_rebuild_rows()
+  self:_build_rows()
+end
+
+---Show help for column view
+function ColumnView:show_help()
+  local Help = require('orgmode.objects.help')
+  Help.show('column_view')
+end
+
+---@param headline OrgHeadline
+---@return OrgColumnViewRow|nil
+function ColumnView:get_row_for_headline(headline)
+  local row_idx = self._headline_to_row[headline]
+  return row_idx and self.rows[row_idx] or nil
+end
+
+function ColumnView:refresh()
+  self:_build_rows()
+  self:_render()
+end
+
+return ColumnView

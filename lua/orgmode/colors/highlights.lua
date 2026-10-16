@@ -72,6 +72,13 @@ function M.link_highlights()
     ['@org.table.delimiter'] = '@punctuation.special',
     ['@org.table.heading'] = '@markup.heading',
     ['@org.edit_src'] = 'Visual',
+
+    -- Column View
+    ['@org.column.border'] = '@punctuation.special',
+    ['@org.column.value'] = '@markup.list',
+    ['@org.column.header'] = '@markup.heading',
+    ['@org.column.current'] = 'Visual',
+    ['@org.column.summary'] = '@number',
   }
 
   for src, def in pairs(links) do

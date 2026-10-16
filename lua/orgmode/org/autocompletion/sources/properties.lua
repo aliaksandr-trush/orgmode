@@ -36,6 +36,7 @@ function OrgCompletionProperties:get_results(_)
     ':REPEAT_TO_STATE:',
     ':CUSTOM_ID:',
     ':CATEGORY:',
+    ':COLUMNS:',
   }
 end
 

@@ -30,6 +30,7 @@ function OrgCompletionDirectives:get_results(_)
     '#+archive',
     '#+options',
     '#+category',
+    '#+columns',
     '#+begin_src',
     '#+begin_example',
     '#+end_src',

@@ -83,6 +83,12 @@ describe('Autocompletion', function()
       result = org.completion:omnifunc(1)
       assert.are.same(2, result)
     end)
+    it('within a COLUMNS value', function()
+      assert.are.equal(10, org.completion:get_start({ line = ':COLUMNS: %' }))
+      assert.are.equal(11, org.completion:get_start({ line = '#+COLUMNS: %' }))
+      assert.are.equal(10, org.completion:get_start({ line = ':columns: %ITEM' }))
+      assert.are.equal(-1, org.completion:get_start({ line = ':COLUMNS:%ITEM' }))
+    end)
     it('within hyperlinks', function()
       setup_file('  [[')
       local result = org.completion:omnifunc(1)
@@ -167,6 +173,7 @@ describe('Autocompletion', function()
         { menu = '[Org]', word = ':REPEAT_TO_STATE:' },
         { menu = '[Org]', word = ':CUSTOM_ID:' },
         { menu = '[Org]', word = ':CATEGORY:' },
+        { menu = '[Org]', word = ':COLUMNS:' },
       }
       assert.are.same(props, result)
     end)
@@ -177,6 +184,7 @@ describe('Autocompletion', function()
       assert.are.same({
         { menu = '[Org]', word = ':CUSTOM_ID:' },
         { menu = '[Org]', word = ':CATEGORY:' },
+        { menu = '[Org]', word = ':COLUMNS:' },
       }, result)
 
       result = org.completion:omnifunc(0, ':CA')
@@ -198,6 +206,7 @@ describe('Autocompletion', function()
         { menu = '[Org]', word = '#+archive' },
         { menu = '[Org]', word = '#+options' },
         { menu = '[Org]', word = '#+category' },
+        { menu = '[Org]', word = '#+columns' },
         { menu = '[Org]', word = '#+begin_src' },
         { menu = '[Org]', word = '#+begin_example' },
         { menu = '[Org]', word = '#+end_src' },
@@ -212,6 +221,48 @@ describe('Autocompletion', function()
       assert.are.same({
         { menu = '[Org]', word = '#+begin_src' },
         { menu = '[Org]', word = '#+begin_example' },
+      }, result)
+    end)
+
+    it('should complete and filter COLUMNS keywords', function()
+      setup_file(':COLUMNS: ')
+      local result = org.completion:omnifunc(0, '')
+      assert.are.same({
+        { menu = '[Org]', word = '%ITEM' },
+        { menu = '[Org]', word = '%TODO' },
+        { menu = '[Org]', word = '%PRIORITY' },
+        { menu = '[Org]', word = '%TAGS' },
+        { menu = '[Org]', word = '%CATEGORY' },
+        { menu = '[Org]', word = '%SCHEDULED' },
+        { menu = '[Org]', word = '%DEADLINE' },
+        { menu = '[Org]', word = '%CLOCKSUM' },
+        { menu = '[Org]', word = '%CLOCKSUM_T' },
+        { menu = '[Org]', word = '%AGE' },
+      }, result)
+
+      setup_file('#+COLUMNS: %T')
+      result = org.completion:omnifunc(0, '%T')
+      assert.are.same({
+        { menu = '[Org]', word = '%TODO' },
+        { menu = '[Org]', word = '%TAGS' },
+      }, result)
+    end)
+
+    it('should complete COLUMNS summary types after an opening brace', function()
+      setup_file(':COLUMNS: %Effort{')
+      local result = org.completion:omnifunc(0, '%Effort{')
+      assert.are.same({
+        { menu = '[Org]', word = '%Effort{+}' },
+        { menu = '[Org]', word = '%Effort{:}' },
+        { menu = '[Org]', word = '%Effort{$}' },
+        { menu = '[Org]', word = '%Effort{min}' },
+        { menu = '[Org]', word = '%Effort{max}' },
+        { menu = '[Org]', word = '%Effort{mean}' },
+        { menu = '[Org]', word = '%Effort{X}' },
+        { menu = '[Org]', word = '%Effort{X/}' },
+        { menu = '[Org]', word = '%Effort{@mean}' },
+        { menu = '[Org]', word = '%Effort{est+}' },
+        { menu = '[Org]', word = '%Effort{+;%.2f}' },
       }, result)
     end)
 

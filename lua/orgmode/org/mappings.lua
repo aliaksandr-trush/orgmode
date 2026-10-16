@@ -16,6 +16,8 @@ local Babel = require('orgmode.babel')
 local Promise = require('orgmode.utils.promise')
 local Input = require('orgmode.ui.input')
 local Footnote = require('orgmode.objects.footnote')
+local Parser = require('orgmode.columns.parser')
+local ColumnView = require('orgmode.columns')
 
 ---Schedule a fold update for the given range. Call after buffer edits.
 ---OrgRange is 1-indexed; vim._foldupdate expects 0-indexed lines.
@@ -42,6 +44,7 @@ end
 ---@field files OrgFiles
 ---@field links OrgLinks
 ---@field completion OrgCompletion
+---@field column_view OrgColumnView|nil
 local OrgMappings = {}
 
 ---@param data table
@@ -62,6 +65,193 @@ end
 -- Support archiving to headline
 function OrgMappings:archive()
   return self.capture:refile_file_headline_to_archive(self.files:get_closest_headline())
+end
+
+function OrgMappings:org_columns()
+  -- Toggle: quit the active view instead of stacking a second one.
+  if self.column_view then
+    return self:org_columns_quit()
+  end
+
+  local headline = self.files:get_closest_headline_or_nil()
+  local headlines, columns_def
+
+  if headline then
+    columns_def = Parser.get_columns_for_headline(headline, self.files)
+    headlines = { headline }
+    if headline:has_child_headlines() then
+      vim.list_extend(headlines, headline:get_child_headlines())
+    end
+  else
+    -- Point is before the first headline: show the whole file.
+    local file = self.files:get_current_file()
+    columns_def = Parser.get_columns_for_file(file)
+    headlines = file:get_top_level_headlines()
+  end
+
+  if not columns_def or #columns_def.columns == 0 then
+    return utils.echo_warning('No column view definition found')
+  end
+
+  local view = ColumnView:new({
+    files = self.files,
+    headlines = headlines,
+    columns_def = columns_def,
+    on_quit = function()
+      self.column_view = nil
+    end,
+  })
+
+  self.column_view = view
+  view:open()
+
+  -- Refresh on buffer write
+  local augroup = vim.api.nvim_create_augroup('orgmode_column_view', { clear = true })
+  local autocmd_id = vim.api.nvim_create_autocmd('BufWritePost', {
+    group = augroup,
+    buffer = view.bufnr,
+    callback = function()
+      -- Only refresh if column view is still active
+      if self.column_view and self.column_view == view and view.rows then
+        view:refresh()
+      end
+    end,
+  })
+
+  -- Store autocmd ID to clean up on quit
+  view._autocmd_id = autocmd_id
+
+  return view
+end
+
+---@private
+function OrgMappings:_get_column_view()
+  return self.column_view
+end
+
+function OrgMappings:org_columns_quit()
+  local view = self:_get_column_view()
+  if view then
+    -- Remove the BufWritePost autocmd
+    if view._autocmd_id then
+      pcall(vim.api.nvim_del_autocmd, view._autocmd_id)
+      view._autocmd_id = nil
+    end
+    view:quit()
+    self.column_view = nil
+  end
+end
+
+function OrgMappings:org_columns_move_left()
+  local view = self:_get_column_view()
+  if view then
+    view:move_left()
+  end
+end
+
+function OrgMappings:org_columns_move_right()
+  local view = self:_get_column_view()
+  if view then
+    view:move_right()
+  end
+end
+
+function OrgMappings:org_columns_move_up()
+  local view = self:_get_column_view()
+  if view then
+    view:move_up()
+  end
+end
+
+function OrgMappings:org_columns_move_down()
+  local view = self:_get_column_view()
+  if view then
+    view:move_down()
+  end
+end
+
+function OrgMappings:org_columns_next_value()
+  local view = self:_get_column_view()
+  if view then
+    view:next_value()
+  end
+end
+
+function OrgMappings:org_columns_prev_value()
+  local view = self:_get_column_view()
+  if view then
+    view:prev_value()
+  end
+end
+
+function OrgMappings:org_columns_view_value()
+  local view = self:_get_column_view()
+  if view then
+    view:view_value()
+  end
+end
+
+function OrgMappings:org_columns_edit_allowed()
+  local view = self:_get_column_view()
+  if view then
+    view:edit_allowed()
+  end
+end
+
+function OrgMappings:org_columns_edit_value()
+  local view = self:_get_column_view()
+  if view then
+    view:edit_value()
+  end
+end
+
+function OrgMappings:org_columns_toggle_or_quit()
+  local view = self:_get_column_view()
+  if view then
+    view:toggle_or_quit()
+  end
+end
+
+function OrgMappings:org_columns_narrow_column()
+  local view = self:_get_column_view()
+  if view then
+    view:narrow_column()
+  end
+end
+
+function OrgMappings:org_columns_widen_column()
+  local view = self:_get_column_view()
+  if view then
+    view:widen_column()
+  end
+end
+
+function OrgMappings:org_columns_insert_column()
+  local view = self:_get_column_view()
+  if view then
+    view:insert_column()
+  end
+end
+
+function OrgMappings:org_columns_delete_column()
+  local view = self:_get_column_view()
+  if view then
+    view:delete_column()
+  end
+end
+
+function OrgMappings:org_columns_move_column_left()
+  local view = self:_get_column_view()
+  if view then
+    view:move_column_left()
+  end
+end
+
+function OrgMappings:org_columns_move_column_right()
+  local view = self:_get_column_view()
+  if view then
+    view:move_column_right()
+  end
 end
 
 ---@param tags? string|string[]

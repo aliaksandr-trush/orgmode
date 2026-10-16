@@ -31,6 +31,7 @@ function OrgCompletion:setup_builtin_sources()
   self:add_source(require('orgmode.org.autocompletion.sources.directives'):new())
   self:add_source(require('orgmode.org.autocompletion.sources.properties'):new({ completion = self }))
   self:add_source(require('orgmode.org.autocompletion.sources.columns'):new())
+  self:add_source(require('orgmode.org.autocompletion.sources.property_values'):new({ completion = self }))
   self:add_source(require('orgmode.org.autocompletion.sources.hyperlinks'):new({ completion = self }))
 end
 

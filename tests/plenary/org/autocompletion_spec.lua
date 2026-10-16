@@ -89,6 +89,12 @@ describe('Autocompletion', function()
       assert.are.equal(10, org.completion:get_start({ line = ':columns: %ITEM' }))
       assert.are.equal(-1, org.completion:get_start({ line = ':COLUMNS:%ITEM' }))
     end)
+    it('within a property value', function()
+      assert.are.equal(11, org.completion:get_start({ line = ':CATEGORY: ' }))
+      assert.are.equal(12, org.completion:get_start({ line = '#+CATEGORY: ' }))
+      assert.are.equal(18, org.completion:get_start({ line = ':REPEAT_TO_STATE: ' }))
+      assert.are.equal(-1, org.completion:get_start({ line = ':CATEGORY:' }))
+    end)
     it('within hyperlinks', function()
       setup_file('  [[')
       local result = org.completion:omnifunc(1)
@@ -263,6 +269,36 @@ describe('Autocompletion', function()
         { menu = '[Org]', word = '%Effort{@mean}' },
         { menu = '[Org]', word = '%Effort{est+}' },
         { menu = '[Org]', word = '%Effort{+;%.2f}' },
+      }, result)
+    end)
+
+    it('should complete CATEGORY values', function()
+      helpers.create_agenda_file({ '#+CATEGORY: AUTOTEST_CATEGORY' })
+      setup_file(':CATEGORY: AUT')
+      local result = org.completion:omnifunc(0, 'AUT')
+      assert.are.same({
+        { menu = '[Org]', word = 'AUTOTEST_CATEGORY' },
+      }, result)
+
+      setup_file('#+CATEGORY: AUT')
+      result = org.completion:omnifunc(0, 'AUT')
+      assert.are.same({
+        { menu = '[Org]', word = 'AUT' },
+        { menu = '[Org]', word = 'AUTOTEST_CATEGORY' },
+      }, result)
+    end)
+
+    it('should complete REPEAT_TO_STATE values with todo keywords', function()
+      setup_file(':REPEAT_TO_STATE: ')
+      local result = org.completion:omnifunc(0, '')
+      assert.are.same({
+        { menu = '[Org]', word = 'TODO' },
+        { menu = '[Org]', word = 'DONE' },
+      }, result)
+
+      result = org.completion:omnifunc(0, 'T')
+      assert.are.same({
+        { menu = '[Org]', word = 'TODO' },
       }, result)
     end)
 

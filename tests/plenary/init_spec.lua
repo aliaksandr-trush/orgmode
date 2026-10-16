@@ -34,6 +34,7 @@ describe('Init', function()
     assert.are.same(0, #org.files:get(todo_archive_file):get_headlines())
     assert.are.same(true, org.files:get(todo_archive_file):is_archive_file())
     assert.are.same({ 'NESTED', 'OFFICE', 'PRIVATE', 'PROJECT', 'WORK' }, org.files:get_tags())
+    assert.are.same({ 'refile', 'todo' }, org.files:get_categories())
   end)
 
   it('should load file and persist to files if it belongs to path', function()

@@ -117,6 +117,27 @@ function OrgFiles:get_tags()
   return taglist
 end
 
+function OrgFiles:get_categories()
+  local categories = {}
+  for _, orgfile in ipairs(self:all()) do
+    if not orgfile:is_archive_file() then
+      local file_category = orgfile:get_category()
+      if file_category and file_category ~= '' then
+        categories[file_category] = 1
+      end
+      for _, headline in ipairs(orgfile:get_headlines()) do
+        local category = headline:get_category()
+        if category and category ~= '' then
+          categories[category] = 1
+        end
+      end
+    end
+  end
+  local list = vim.tbl_keys(categories)
+  table.sort(list)
+  return list
+end
+
 function OrgFiles:unload()
   self.files = {}
   self.all_files = {}

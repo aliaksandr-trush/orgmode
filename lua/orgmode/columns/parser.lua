@@ -194,13 +194,16 @@ function Parser._parse_column_spec(spec)
   }
 end
 
+---Resolve the raw column format string for a headline, checking only the
+---headline's own `:COLUMNS:` property, its ancestors and the file
+---directive. Returns nil when the format is not defined locally, so callers
+---can fall back to a wider default.
 ---@param headline OrgHeadline
----@param files OrgFiles
----@return OrgColumnsDefinition|nil
-function Parser.get_columns_for_headline(headline, files)
+---@return string|nil
+function Parser.get_columns_format_for_headline(headline)
   local columns_prop = headline:get_property('COLUMNS')
   if columns_prop then
-    return Parser.parse(columns_prop)
+    return columns_prop
   end
 
   local parent_section = headline:node():parent():parent()
@@ -210,10 +213,22 @@ function Parser.get_columns_for_headline(headline, files)
       local parent_headline = require('orgmode.files.headline'):new(parent_headline_node, headline.file)
       local parent_prop = parent_headline:get_property('COLUMNS')
       if parent_prop then
-        return Parser.parse(parent_prop)
+        return parent_prop
       end
     end
     parent_section = parent_section:parent()
+  end
+
+  return headline.file:get_file_columns()
+end
+
+---@param headline OrgHeadline
+---@param files OrgFiles
+---@return OrgColumnsDefinition|nil
+function Parser.get_columns_for_headline(headline, files)
+  local format = Parser.get_columns_format_for_headline(headline)
+  if format then
+    return Parser.parse(format)
   end
 
   return Parser.get_columns_for_file(headline.file)

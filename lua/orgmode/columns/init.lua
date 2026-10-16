@@ -1,33 +1,8 @@
 local utils = require('orgmode.utils')
 local config = require('orgmode.config')
 local Summary = require('orgmode.columns.summary')
-local Date = require('orgmode.objects.date')
-local Duration = require('orgmode.objects.duration')
-
----Pad or truncate `text` to exactly `width` display columns.
----@param text string
----@param width number
----@return string
-local function fit_to_width(text, width)
-  local display_width = vim.api.nvim_strwidth(text)
-  if display_width > width then
-    local truncated = ''
-    local used = 0
-    local char_count = vim.fn.strchars(text)
-    for i = 0, char_count - 1 do
-      local char = vim.fn.strcharpart(text, i, 1)
-      local char_width = vim.api.nvim_strwidth(char)
-      if used + char_width > width - 1 then
-        break
-      end
-      used = used + char_width
-      truncated = truncated .. char
-    end
-    text = truncated .. '…'
-    display_width = vim.api.nvim_strwidth(text)
-  end
-  return text .. string.rep(' ', width - display_width)
-end
+local Cells = require('orgmode.columns.cells')
+local Input = require('orgmode.ui.input')
 
 ---Normalize a mapping definition (a single key or a list of keys) to a list.
 ---@param mapping string|string[]|nil
@@ -58,13 +33,12 @@ function ColumnView:new(opts)
     bufnr = opts.bufnr or 0,
     winid = opts.winid or 0,
     ns = ns,
+    cells = Cells:new(),
     current_row = 1,
     current_col = 1,
     original_winid = vim.api.nvim_get_current_win(),
     original_bufnr = vim.api.nvim_get_current_buf(),
     _headline_to_row = {},
-    _clocksum_cache = {},
-    _clocksum_t_cache = {},
     _widths = nil,
     on_quit = opts.on_quit,
   }
@@ -114,8 +88,7 @@ end
 function ColumnView:_build_rows()
   self.rows = {}
   self._headline_to_row = {}
-  self._clocksum_cache = {}
-  self._clocksum_t_cache = {}
+  self.cells:clear_cache()
   self._widths = nil
   local visited = {}
 
@@ -177,115 +150,27 @@ end
 ---@param column OrgColumnSpec
 ---@return string
 function ColumnView:_get_cell_value(headline, column)
-  if column.is_special then
-    return self:_get_special_value(headline, column.name)
-  end
-  local prop = headline:get_property(column.name:lower())
-  return prop or ''
+  return self.cells:get_value(headline, column)
 end
 
----@param headline OrgHeadline
----@param name string
----@return string
-function ColumnView:_get_special_value(headline, name)
-  if name == 'ITEM' then
-    local indent = string.rep('  ', headline:get_level() - 1)
-    local todo = headline:get_todo() or ''
-    local title = headline:get_title()
-    if todo ~= '' then
-      title = todo .. ' ' .. title
-    end
-    local priority = headline:get_priority()
-    if priority ~= '' then
-      title = '[#' .. priority .. '] ' .. title
-    end
-    return indent .. title
-  elseif name == 'CLOCKSUM' then
-    return self:_get_clocksum(headline, false)
-  elseif name == 'CLOCKSUM_T' then
-    return self:_get_clocksum(headline, true)
-  elseif name == 'AGE' then
-    local created = headline:get_property('CREATED')
-    if created then
-      local d = Date.from_string(created)
-      if d then
-        local minutes = math.max(0, math.floor((os.time() - d.timestamp) / 60))
-        return Duration.from_minutes(minutes):to_string()
-      end
-    end
-    return ''
-  elseif name == 'TAGS' then
-    return headline:tags_to_string()
-  elseif name == 'TODO' then
-    return headline:get_todo() or ''
-  elseif name == 'PRIORITY' then
-    local p = headline:get_priority()
-    return p ~= '' and ('[#' .. p .. ']') or ''
-  elseif name == 'CATEGORY' then
-    return headline:get_category()
-  elseif name == 'SCHEDULED' then
-    local scheduled = headline:get_scheduled_date()
-    if scheduled then
-      return scheduled:to_date_string()
-    end
-    return ''
-  elseif name == 'DEADLINE' then
-    local deadline = headline:get_deadline_date()
-    if deadline then
-      return deadline:to_date_string()
-    end
-    return ''
+---Run `fn` with the underlying buffer temporarily writable, restoring the
+---locked state afterwards. While the column view is open, edits performed
+---through the view are the only intended way to modify the buffer.
+---@param fn fun()
+---@return any
+function ColumnView:_write(fn)
+  if not self._opened or not self._original_modifiable or not vim.api.nvim_buf_is_valid(self.bufnr) then
+    return fn()
   end
-  return ''
-end
-
----Sum the CLOCK intervals of a headline and all of its descendants.
----`today_only` restricts the sum to clock intervals of the current day.
----@param headline OrgHeadline
----@param today_only boolean
----@return string
-function ColumnView:_get_clocksum(headline, today_only)
-  local total_minutes = self:_compute_clocksum(headline, today_only)
-  if total_minutes <= 0 then
-    return ''
+  vim.bo[self.bufnr].modifiable = true
+  local ok, result = pcall(fn)
+  if vim.api.nvim_buf_is_valid(self.bufnr) then
+    vim.bo[self.bufnr].modifiable = false
   end
-  return Duration.from_minutes(total_minutes):to_string('HH:MM')
-end
-
----Recursively compute the subtree clock total for `headline`, memoizing every
----visited headline so that the whole view is computed in a single pass.
----@param headline OrgHeadline
----@param today_only boolean
----@return number
-function ColumnView:_compute_clocksum(headline, today_only)
-  local cache = today_only and self._clocksum_t_cache or self._clocksum_cache
-  local cached = cache[headline]
-  if cached ~= nil then
-    return cached
+  if not ok then
+    error(result)
   end
-
-  local total_minutes = 0
-  local logbook = headline:get_logbook()
-  if logbook then
-    if today_only then
-      local from = Date.today():start_of('day')
-      local to = Date.today():end_of('day')
-      total_minutes = total_minutes + logbook:get_total_minutes(from, to)
-      local active = logbook:get_active()
-      if active and active.start_time:is_today() then
-        total_minutes = total_minutes + math.floor((Date.now().timestamp - active.start_time.timestamp) / 60)
-      end
-    else
-      total_minutes = total_minutes + logbook:get_total_with_active().minutes
-    end
-  end
-
-  for _, child in ipairs(headline:get_child_headlines()) do
-    total_minutes = total_minutes + self:_compute_clocksum(child, today_only)
-  end
-
-  cache[headline] = total_minutes
-  return total_minutes
+  return result
 end
 
 function ColumnView:open()
@@ -294,6 +179,10 @@ function ColumnView:open()
 
   self._original_winbar = vim.wo[self.winid].winbar
   self._opened = true
+  -- Lock the buffer so the column view is the only way to change it; typing
+  -- directly would desync the rendered cells from the underlying text.
+  self._original_modifiable = vim.bo[self.bufnr].modifiable
+  vim.bo[self.bufnr].modifiable = false
   vim.wo[self.winid].cursorline = true
   self:_setup_mappings()
   self:_render()
@@ -439,7 +328,7 @@ function ColumnView:_build_header_virt_text()
   local parts = {}
 
   for col_idx, col in ipairs(self.columns) do
-    local content = fit_to_width(col.title, self:_get_width(col_idx))
+    local content = Cells.fit(col.title, self:_get_width(col_idx))
 
     table.insert(parts, { '│', '@org.column.border' })
     table.insert(parts, { ' ' .. content .. ' ', '@org.column.header' })
@@ -475,7 +364,7 @@ function ColumnView:_build_virt_text(row, row_idx)
 
   for col_idx, cell in ipairs(row.cells) do
     local is_current_col = col_idx == self.current_col
-    local content = fit_to_width(self:_cell_content(cell), self:_get_width(col_idx))
+    local content = Cells.fit(self:_cell_content(cell), self:_get_width(col_idx))
 
     local is_current_cell = is_current_row and is_current_col
     local hl_group = cell.summary and '@org.column.summary' or '@org.column.value'
@@ -619,7 +508,9 @@ function ColumnView:_change_value(direction)
     local ts = TodoState:new({ current_state = headline:get_todo() })
     local next_state = direction > 0 and ts:get_next() or ts:get_prev()
     if next_state then
-      headline:set_todo(next_state.value)
+      self:_write(function()
+        headline:set_todo(next_state.value)
+      end)
       self:refresh()
     end
     return
@@ -627,7 +518,9 @@ function ColumnView:_change_value(direction)
     local PriorityState = require('orgmode.objects.priority_state')
     local ps = PriorityState:new(headline:get_priority(), config:get_priority_range())
     local value = direction > 0 and ps:increase() or ps:decrease()
-    headline:set_priority(value)
+    self:_write(function()
+      headline:set_priority(value)
+    end)
     self:refresh()
     return
   end
@@ -667,16 +560,18 @@ function ColumnView:_set_cell_value(cell, value)
   local headline = cell.headline
   local col = cell.column
 
-  if col.is_special then
-    if col.name == 'TODO' then
-      headline:set_todo(value)
-    elseif col.name == 'PRIORITY' then
-      -- Allowed values carry the display form `[#A]`; strip it for storage.
-      headline:set_priority(value:match('%[#(.-)%]') or value)
+  self:_write(function()
+    if col.is_special then
+      if col.name == 'TODO' then
+        headline:set_todo(value)
+      elseif col.name == 'PRIORITY' then
+        -- Allowed values carry the display form `[#A]`; strip it for storage.
+        headline:set_priority(value:match('%[#(.-)%]') or value)
+      end
+    else
+      headline:set_property(col.name:lower(), value)
     end
-  else
-    headline:set_property(col.name:lower(), value)
-  end
+  end)
 
   cell.value = self:_get_cell_value(headline, col)
   self:refresh()
@@ -695,6 +590,9 @@ function ColumnView:quit()
   vim.api.nvim_buf_clear_namespace(self.bufnr, self.ns, 0, -1)
   if self.winid and vim.api.nvim_win_is_valid(self.winid) then
     vim.wo[self.winid].winbar = self._original_winbar or ''
+  end
+  if vim.api.nvim_buf_is_valid(self.bufnr) and self._original_modifiable ~= nil then
+    vim.bo[self.bufnr].modifiable = self._original_modifiable
   end
   self._opened = false
   -- Clean up column view keymaps
@@ -793,7 +691,9 @@ function ColumnView:edit_allowed()
 
   self.allowed_values[prop_name] = new_allowed
 
-  target:set_property(prop_name, table.concat(new_allowed, ','))
+  self:_write(function()
+    target:set_property(prop_name, table.concat(new_allowed, ','))
+  end)
 
   self:refresh()
 end
@@ -818,7 +718,9 @@ function ColumnView:edit_value()
     local ts = todo_state:new({ current_state = headline:get_todo() })
     local next_state = ts:open_fast_access()
     if next_state then
-      headline:set_todo(next_state.value)
+      self:_write(function()
+        headline:set_todo(next_state.value)
+      end)
       cell.value = self:_get_cell_value(headline, col)
       self:refresh()
     end
@@ -828,7 +730,9 @@ function ColumnView:edit_value()
     local ps = PriorityState:new(headline:get_priority(), config:get_priority_range())
     local new_prio = ps:prompt_user()
     if new_prio then
-      headline:set_priority(new_prio)
+      self:_write(function()
+        headline:set_priority(new_prio)
+      end)
       cell.value = self:_get_cell_value(headline, col)
       self:refresh()
     end
@@ -836,15 +740,17 @@ function ColumnView:edit_value()
   elseif col.name == 'TAGS' then
     -- Use existing set_tags which has tag completion
     local current_tags = utils.tags_to_string(headline:get_own_tags())
-    local tags = vim.fn.input('Tags: ', current_tags, function(arg_lead)
+    return Input.open('Tags: ', current_tags, function(arg_lead)
       return utils.prompt_autocomplete(arg_lead, self.files:get_tags())
+    end):next(function(tags)
+      if tags then
+        self:_write(function()
+          headline:set_tags(tags)
+        end)
+        cell.value = self:_get_cell_value(headline, col)
+        self:refresh()
+      end
     end)
-    if tags then
-      headline:set_tags(tags)
-      cell.value = self:_get_cell_value(headline, col)
-      self:refresh()
-    end
-    return
   end
 
   -- For regular property columns, use input with allowed values completion
@@ -864,7 +770,9 @@ function ColumnView:edit_value()
         end,
       }, function(choice)
         if choice then
-          headline:set_property(prop_name, choice)
+          self:_write(function()
+            headline:set_property(prop_name, choice)
+          end)
           cell.value = self:_get_cell_value(headline, col)
           self:refresh()
         end
@@ -881,7 +789,9 @@ function ColumnView:edit_value()
       local idx = tonumber(choice)
       if idx and idx >= 1 and idx <= #items then
         local choice = items[idx]
-        headline:set_property(prop_name, choice)
+        self:_write(function()
+          headline:set_property(prop_name, choice)
+        end)
         cell.value = self:_get_cell_value(headline, col)
         self:refresh()
       end
@@ -893,7 +803,9 @@ function ColumnView:edit_value()
     if not input or vim.trim(input) == '' then
       return
     end
-    headline:set_property(prop_name, input)
+    self:_write(function()
+      headline:set_property(prop_name, input)
+    end)
     cell.value = self:_get_cell_value(headline, col)
     self:refresh()
   end
@@ -919,7 +831,9 @@ function ColumnView:toggle_or_quit()
     local new_val = cell.value:gsub('%[(.)%]', function(inner)
       return inner:upper() == 'X' and '[ ]' or '[X]'
     end, 1)
-    headline:set_property(col.name:lower(), new_val)
+    self:_write(function()
+      headline:set_property(col.name:lower(), new_val)
+    end)
     cell.value = new_val
     self:refresh()
     return

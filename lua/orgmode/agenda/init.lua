@@ -45,6 +45,9 @@ function Agenda:open_view(type, opts)
     files = self.files,
     agenda_filter = self.filters,
     highlighter = self.highlighter,
+    on_edit = function(headline, setter)
+      self:_edit_headline(headline, setter)
+    end,
   })
 
   local view = AgendaTypes[type]:new(view_opts)
@@ -76,6 +79,10 @@ end
 function Agenda:render()
   local line = vim.fn.line('.')
   local bufnr = self:_open_window()
+  -- Column view keymaps are buffer-local; drop any from a previous render so
+  -- they do not leak into non-column views that reuse this buffer.
+  require('orgmode.agenda.types.columns').clear_mappings(bufnr)
+  require('orgmode.agenda.types.columns').clear_highlights(bufnr)
   for i, view in ipairs(self.views) do
     view:render(bufnr, line)
     if #self.views > 1 and i < #self.views and #view:get_lines() > 0 then
@@ -120,6 +127,10 @@ function Agenda:tags_todo(opts)
   return self:open_view('tags_todo', opts)
 end
 
+function Agenda:columns(opts)
+  return self:open_view('columns', opts)
+end
+
 function Agenda:_build_custom_commands()
   if not config.org_agenda_custom_commands then
     return {}
@@ -143,6 +154,17 @@ function Agenda:_build_custom_commands()
         todo_ignore_scheduled = opts.org_agenda_todo_ignore_scheduled,
         todo_ignore_deadlines = opts.org_agenda_todo_ignore_deadlines,
       },
+      columns = {
+        overriding_columns_format = opts.org_agenda_overriding_columns_format,
+        agenda_filter = self.filters,
+        files = self.files,
+        header = opts.org_agenda_overriding_header,
+        agenda_files = opts.org_agenda_files,
+        sorting_strategy = opts.org_agenda_sorting_strategy,
+        highlighter = self.highlighter,
+        remove_tags = opts.org_agenda_remove_tags,
+        id = id,
+      },
     }
 
     if not opts_by_type[opts.type] then
@@ -159,6 +181,9 @@ function Agenda:_build_custom_commands()
     opts_by_type[opts.type].highlighter = self.highlighter
     opts_by_type[opts.type].remove_tags = opts.org_agenda_remove_tags
     opts_by_type[opts.type].id = id
+    opts_by_type[opts.type].on_edit = function(headline, setter)
+      self:_edit_headline(headline, setter)
+    end
 
     return opts_by_type[opts.type]
   end
@@ -229,6 +254,14 @@ function Agenda:_build_menu()
     key = 's',
     action = function()
       return self:search()
+    end,
+  })
+
+  menu:add_option({
+    label = 'Column view of all entries',
+    key = 'c',
+    action = function()
+      return self:columns()
     end,
   })
 
@@ -661,7 +694,20 @@ function Agenda:filter()
   end)
 end
 
----@param opts table
+---Write a value through the agenda column view: apply the mutation to the
+---headline's file, then reload and re-render so the view stays in sync.
+---@param headline OrgHeadline
+---@param setter fun(headline: OrgHeadline)
+function Agenda:_edit_headline(headline, setter)
+  return headline.file
+    :update(function()
+      setter(headline)
+    end)
+    :next(function()
+      return self:redo('remote_edit', true)
+    end)
+end
+
 function Agenda:_remote_edit(opts)
   opts = opts or {}
   local action = opts.action

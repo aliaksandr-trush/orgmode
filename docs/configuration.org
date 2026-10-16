@@ -2148,6 +2148,42 @@ require('orgmode').setup({
 })
 #+end_src
 
+*** Column View
+:PROPERTIES:
+:CUSTOM_ID: column-view
+:END:
+Display a spreadsheet-like view of properties overlaid on headlines (org buffer)
+or as a full-screen buffer (agenda).
+
+**** org_columns_default_format
+:PROPERTIES:
+:CUSTOM_ID: org_columns_default_format
+:END:
+- Type: =string=
+- Default: ='%25ITEM %10Effort(Effort){:} %10CLOCKSUM %10CLOCKSUM_T %10Tags %10TODO'=
+Default column format for the overlay column view in the org buffer. Not used
+when a headline or its ancestors define a =:COLUMNS:= property or the file
+has a =#+COLUMNS:= directive.
+
+**** org_columns_default_format_for_agenda
+:PROPERTIES:
+:CUSTOM_ID: org_columns_default_format_for_agenda
+:END:
+- Type: =string | nil=
+- Default: =nil=
+Default column format for the agenda column view. Falls back to
+=org_columns_default_format= when nil.
+
+**** org_agenda_overriding_columns_format
+:PROPERTIES:
+:CUSTOM_ID: org_agenda_overriding_columns_format
+:END:
+- Type: =string | nil=
+- Default: =nil=
+Column format override for the agenda column view, taking precedence over
+=org_columns_default_format_for_agenda=. Can be set globally, or per custom
+agenda command of type =columns=.
+
 *** Edit Src
 :PROPERTIES:
 :CUSTOM_ID: edit-src

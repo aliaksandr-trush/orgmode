@@ -141,6 +141,9 @@ return {
       'org_mappings.show_help',
       { args = { 'agenda' }, opts = { desc = 'org show help', help_desc = 'Show this help' } }
     ),
+    org_agenda_columns = m.action('agenda.columns', {
+      opts = { desc = 'org column view', help_desc = 'Show column view of all entries' },
+    }),
   },
   capture = {
     org_capture_finalize = m.action(

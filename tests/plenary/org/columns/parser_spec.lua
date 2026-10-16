@@ -79,3 +79,65 @@ describe('Column Parser', function()
     end
   end)
 end)
+
+describe('Column Format Resolution', function()
+  local helpers = require('tests.plenary.helpers')
+
+  local function create_file(lines)
+    local file = helpers.create_file(lines, 'format_test.org')
+    file:reload_sync()
+    return file
+  end
+
+  it('resolves from headline property', function()
+    local file = create_file({
+      '* Task A',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM %TODO',
+      ':END:',
+    })
+    local headline = file:get_headlines()[1]
+    assert.are.equal('%ITEM %TODO', Parser.get_columns_format_for_headline(headline))
+  end)
+
+  it('resolves from ancestor property', function()
+    local file = create_file({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM',
+      ':END:',
+      '** Child',
+    })
+    local parent = file:get_headlines()[1]
+    local child = parent:get_child_headlines()[1]
+    assert.are.equal('%ITEM', Parser.get_columns_format_for_headline(child))
+  end)
+
+  it('resolves from file directive', function()
+    local file = create_file({
+      '#+COLUMNS: %25ITEM %TAGS',
+      '* Task',
+    })
+    local headline = file:get_headlines()[1]
+    assert.are.equal('%25ITEM %TAGS', Parser.get_columns_format_for_headline(headline))
+  end)
+
+  it('returns nil when no local format exists', function()
+    local file = create_file({
+      '* Task A',
+      '* Task B',
+    })
+    local headline = file:get_headlines()[1]
+    assert.is_nil(Parser.get_columns_format_for_headline(headline))
+  end)
+
+  it('get_columns_for_headline falls back to global default', function()
+    local file = create_file({
+      '* Task A',
+    })
+    local headline = file:get_headlines()[1]
+    local def = Parser.get_columns_for_headline(headline)
+    assert.is_not_nil(def)
+    assert.is_not_nil(def.columns[1])
+  end)
+end)

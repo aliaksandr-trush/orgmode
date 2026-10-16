@@ -3,13 +3,14 @@
 ---@alias OrgMappingValue string | string[]
 
 ---@class OrgAgendaCustomCommandTypeInterface
----@field type? 'agenda' | 'tags' | 'tags_todo'
+---@field type? 'agenda' | 'tags' | 'tags_todo' | 'columns'
 ---@field org_agenda_overriding_header? string
 ---@field org_agenda_files? string[]
 ---@field org_agenda_tag_filter_preset? string
 ---@field org_agenda_category_filter_preset? string
 ---@field org_agenda_sorting_strategy? OrgAgendaSortingStrategy[]
 ---@field org_agenda_remove_tags? boolean
+---@field org_agenda_overriding_columns_format? string
 
 ---@class OrgAgendaCustomCommandAgenda:OrgAgendaCustomCommandTypeInterface
 ---@field org_agenda_span? OrgAgendaSpan Default: 'week'
@@ -21,13 +22,19 @@
 ---@field org_agenda_todo_ignore_scheduled? OrgAgendaTodoIgnoreScheduledTypes
 ---@field org_agenda_todo_ignore_deadlines? OrgAgendaTodoIgnoreDeadlinesTypes
 
+---@class OrgAgendaCustomCommandColumns:OrgAgendaCustomCommandTypeInterface
+---@field org_agenda_overriding_columns_format? string Column format override for the column view
+
 ---@class OrgAgendaTimeGridOpts
 ---@field type? ('daily' | 'weekly' | 'today' | 'require-timed' | 'remove-match')[]
 ---@field times? number[]
 ---@field time_separator? string
 ---@field time_label? string
 
----@alias OrgAgendaCustomCommandType (OrgAgendaCustomCommandAgenda | OrgAgendaCustomCommandTags)
+---@alias OrgAgendaCustomCommandType
+---| OrgAgendaCustomCommandAgenda
+---| OrgAgendaCustomCommandTags
+---| OrgAgendaCustomCommandColumns
 
 ---@class OrgAgendaCustomCommand
 ---@field description string Description in prompt
@@ -93,6 +100,7 @@
 ---@field org_agenda_add_note? OrgMappingValue Default: '<prefix>na'
 ---@field org_agenda_open_at_point? OrgMappingValue Default: '<prefix>o'
 ---@field org_agenda_show_help? OrgMappingValue Default: 'g?'
+---@field org_agenda_columns? OrgMappingValue Default: '<prefix>xc'
 ---
 ---@class OrgMappingsCapture
 ---@field org_capture_finalize? OrgMappingValue Default: '<C-c>'
@@ -217,6 +225,8 @@
 ---@field org_agenda_text_search_extra_files? ('agenda-archives')[] Additional files to earch from agenda search prompt. Default: {}
 ---@field org_agenda_hide_empty_blocks? boolean Hide empty custom agenda commands in agenda view. Default: false
 ---@field org_agenda_custom_commands? table<string, OrgAgendaCustomCommand> Custom commands for the agenda view. Default: {}
+---@field org_columns_default_format_for_agenda? string Default column format for agenda column view. Default: nil (falls back to org_columns_default_format)
+---@field org_agenda_overriding_columns_format? string Column format override for agenda column view. Default: nil
 ---@field org_agenda_block_separator? string Separator for blocks in the agenda view. Default: '-'
 ---@field org_agenda_sorting_strategy? table<'agenda' | 'todo' | 'tags', OrgAgendaSortingStrategy[]> Sorting strategy for the agenda view. See docs for default value
 ---@field org_agenda_remove_tags? boolean If true, tags will be removed from the all agenda views. Default: false

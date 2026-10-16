@@ -567,4 +567,29 @@ describe('ColumnView', function()
     view:quit()
     assert.are.equal('ORIGINAL_WINBAR', vim.wo[view.winid].winbar)
   end)
+
+  it('locks the buffer while the view is open and restores it on quit', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %25ITEM %10Owner{Owner_ALL}',
+      ':Owner_ALL: Alice, Bob',
+      ':END:',
+    })
+    view.current_row = 1
+    view.current_col = 2
+
+    local bufnr = view.bufnr
+    assert.is_true(vim.bo[bufnr].modifiable)
+
+    view:open()
+    assert.is_false(vim.bo[bufnr].modifiable)
+
+    view:select_value(2)
+    assert.are.equal('Bob', view.rows[1].headline:get_property('owner'))
+    assert.is_false(vim.bo[bufnr].modifiable)
+
+    view:quit()
+    assert.is_true(vim.bo[bufnr].modifiable)
+  end)
 end)

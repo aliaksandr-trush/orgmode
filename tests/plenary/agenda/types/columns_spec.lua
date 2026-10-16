@@ -1,0 +1,351 @@
+local helpers = require('tests.plenary.helpers')
+
+describe('Agenda Columns Type', function()
+  local OrgAgendaColumnsType = require('orgmode.agenda.types.columns')
+  local org = require('orgmode')
+  local config = require('orgmode.config')
+
+  local function build_view(content, opts)
+    opts = opts or {}
+    vim.bo.modified = false
+    helpers.create_agenda_file(content)
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    local view
+    view = OrgAgendaColumnsType:new({
+      files = org.files,
+      highlighter = org.highlighter,
+      agenda_filter = org.agenda.filters,
+      overriding_columns_format = opts.overriding_columns_format or nil,
+      remove_tags = opts.remove_tags,
+      on_edit = opts.on_edit or function(headline, setter)
+        headline.file
+          :update(function()
+            setter(headline)
+          end)
+          :wait()
+        view:render(bufnr)
+      end,
+    })
+    view:prepare():wait()
+    view:render(bufnr)
+    return view
+  end
+
+  local function headline_index(view, title)
+    for i, h in ipairs(view.headlines) do
+      if h:get_title() == title then
+        return i
+      end
+    end
+  end
+
+  local function column_index(view, name)
+    name = name:upper()
+    for i, c in ipairs(view.columns) do
+      if c.name == name then
+        return i
+      end
+    end
+  end
+
+  local function render_lines(view)
+    return vim.tbl_map(function(line)
+      return line:compile().content
+    end, view:get_lines())
+  end
+
+  it('renders a column view with header and rows', function()
+    local view = build_view({
+      '#+COLUMNS: %20ITEM %TODO %TAGS',
+      '',
+      '* TODO Task One  :work:',
+      '* DONE Task Two  :home:',
+    })
+
+    assert.is_not_nil(view)
+    assert.is_true(#view.columns >= 3)
+
+    local lines = render_lines(view)
+    local content = table.concat(lines, '\n')
+    assert.is_truthy(content:find('ITEM', 1, true))
+    assert.is_truthy(content:find('TODO', 1, true))
+    assert.is_truthy(content:find('TAGS', 1, true))
+    assert.is_truthy(content:find('Task One', 1, true))
+    assert.is_truthy(content:find('Task Two', 1, true))
+  end)
+
+  it('renders special columns like TODO and PRIORITY', function()
+    local view = build_view({
+      '#+COLUMNS: %30ITEM %TODO %PRIORITY',
+      '',
+      '* TODO Task One [#A]',
+      '* DONE Task Two',
+    })
+
+    assert.is_not_nil(view)
+    assert.is_true(#view.columns >= 3)
+
+    local lines = render_lines(view)
+    local content = table.concat(lines, '\n')
+    assert.is_truthy(content:find('TODO', 1, true))
+    assert.is_truthy(content:find('DONE', 1, true))
+    assert.is_truthy(content:find('[#A]', 1, true))
+  end)
+
+  it('renders ITEM column with headline titles', function()
+    local view = build_view({
+      '#+COLUMNS: %ITEM',
+      '* First task',
+      '* Second task',
+    })
+
+    assert.is_not_nil(view)
+    local lines = render_lines(view)
+    local content = table.concat(lines, '\n')
+    assert.is_truthy(content:find('First task', 1, true))
+    assert.is_truthy(content:find('Second task', 1, true))
+  end)
+
+  it('uses overriding format when provided', function()
+    local view = build_view({
+      '#+COLUMNS: %ITEM %TODO',
+      '* Task',
+    }, { overriding_columns_format = '%ITEM %PRIORITY' })
+
+    assert.is_not_nil(view)
+    assert.equal('PRIORITY', view.columns[2].name)
+  end)
+
+  it('uses the global overriding format when the command does not set one', function()
+    local view = build_view({
+      '#+COLUMNS: %ITEM %TODO',
+      '* Task',
+    })
+
+    config.opts.org_agenda_overriding_columns_format = '%ITEM %PRIORITY'
+    view:render(view.bufnr)
+    config.opts.org_agenda_overriding_columns_format = nil
+
+    assert.equal('PRIORITY', view.columns[2].name)
+  end)
+
+  it('hides the TAGS column when remove_tags is set', function()
+    local view = build_view({
+      '#+COLUMNS: %ITEM %TAGS',
+      '* Task  :removetagsprobe:',
+    }, { remove_tags = true })
+
+    local content = table.concat(render_lines(view), '\n')
+    assert.is_falsy(content:find('removetagsprobe', 1, true))
+  end)
+
+  it('falls back to the global default format', function()
+    local view = build_view({
+      '* Task A',
+      '* Task B',
+    })
+
+    assert.is_not_nil(view)
+    assert.is_true(#view.columns > 0)
+  end)
+
+  it('attaches headline refs for navigation', function()
+    local view = build_view({
+      '#+COLUMNS: %ITEM',
+      '* Task One',
+      '* Task Two',
+    })
+
+    assert.is_not_nil(view)
+    local lines = view:get_lines()
+    assert.is_not_nil(lines[3].headline_ref)
+    assert.is_not_nil(lines[4].headline_ref)
+  end)
+
+  it('filters entries through agenda filter', function()
+    local view = build_view({
+      '#+COLUMNS: %ITEM',
+      '* TODO Active',
+      '* DONE Done',
+    })
+
+    assert.is_not_nil(view)
+    local lines = render_lines(view)
+    local content = table.concat(lines, '\n')
+    assert.is_truthy(content:find('Active', 1, true))
+  end)
+
+  it('recomputes rows on render so redo reflects file changes', function()
+    local view = build_view({
+      '#+COLUMNS: %ITEM',
+      '* Redo Probe One',
+    })
+    local target
+    for _, h in ipairs(view.headlines) do
+      if h:get_title() == 'Redo Probe One' then
+        target = h
+        break
+      end
+    end
+    assert.is_not_nil(target)
+    local filename = target.file.filename
+
+    vim.api.nvim_buf_set_lines(target.file:bufnr(), 1, 1, false, { '* Redo Probe Two' })
+    view.files:load_sync(true)
+    view:render(view.bufnr)
+
+    local found = false
+    for _, h in ipairs(view.headlines) do
+      if h.file.filename == filename and h:get_title() == 'Redo Probe Two' then
+        found = true
+      end
+    end
+    assert.is_true(found)
+  end)
+
+  it('rerenders a single row in place after an inline edit', function()
+    local view = build_view({
+      '#+COLUMNS: %ITEM %TODO',
+      '* Task One',
+    })
+    local old_line = view:get_lines()[3]
+    old_line.headline:set_todo('TODO')
+
+    view:rerender_agenda_line(old_line, old_line.headline)
+
+    local content = table.concat(render_lines(view), '\n')
+    assert.is_truthy(content:find('TODO', 1, true))
+  end)
+
+  it('moves between cells with move_left/right/up/down', function()
+    local view = build_view({ '* Nav One', '* Nav Two' }, {
+      overriding_columns_format = '%ITEM %TODO',
+    })
+    view.current_row = headline_index(view, 'Nav One')
+    view.current_col = column_index(view, 'ITEM')
+
+    view:move_right()
+    assert.are.equal(column_index(view, 'TODO'), view.current_col)
+    view:move_right()
+    assert.are.equal(column_index(view, 'TODO'), view.current_col)
+    view:move_left()
+    assert.are.equal(column_index(view, 'ITEM'), view.current_col)
+
+    view:move_down()
+    assert.are.equal(headline_index(view, 'Nav One') + 1, view.current_row)
+    view:move_up()
+    assert.are.equal(headline_index(view, 'Nav One'), view.current_row)
+  end)
+
+  it('selects a TODO value with select_value', function()
+    local view = build_view({ '* Todo Probe' }, {
+      overriding_columns_format = '%25ITEM %TODO',
+    })
+    view.current_row = headline_index(view, 'Todo Probe')
+    view.current_col = column_index(view, 'TODO')
+
+    view:select_value(2)
+    local updated = view.headlines[headline_index(view, 'Todo Probe')]
+    assert.are.equal('DONE', updated:get_todo())
+  end)
+
+  it('cycles a TODO value with next_value', function()
+    local view = build_view({ '* Cycle Probe' }, {
+      overriding_columns_format = '%25ITEM %TODO',
+    })
+    view.current_row = headline_index(view, 'Cycle Probe')
+    view.current_col = column_index(view, 'TODO')
+
+    view:next_value()
+    assert.are.equal('TODO', view.headlines[headline_index(view, 'Cycle Probe')]:get_todo())
+    view.current_row = headline_index(view, 'Cycle Probe')
+    view:next_value()
+    assert.are.equal('DONE', view.headlines[headline_index(view, 'Cycle Probe')]:get_todo())
+    view.current_row = headline_index(view, 'Cycle Probe')
+    view:prev_value()
+    assert.are.equal('TODO', view.headlines[headline_index(view, 'Cycle Probe')]:get_todo())
+  end)
+
+  it('cycles a property value through its allowed values', function()
+    local view = build_view({
+      '* Prop Parent',
+      ':PROPERTIES:',
+      ':Owner_ALL: Alice, Bob',
+      ':Owner: Alice',
+      ':END:',
+    }, {
+      overriding_columns_format = '%25ITEM %Owner{Owner_ALL}',
+    })
+    view.current_row = headline_index(view, 'Prop Parent')
+    view.current_col = column_index(view, 'Owner')
+
+    view:next_value()
+    local updated = view.headlines[headline_index(view, 'Prop Parent')]
+    assert.are.equal('Bob', updated:get_property('owner'))
+  end)
+
+  it('toggles a checkbox property', function()
+    local view = build_view({
+      '* Check Probe',
+      ':PROPERTIES:',
+      ':status: [ ]',
+      ':END:',
+    }, {
+      overriding_columns_format = '%25ITEM %Status',
+    })
+    view.current_row = headline_index(view, 'Check Probe')
+    view.current_col = column_index(view, 'Status')
+
+    view:toggle_or_quit()
+    assert.are.equal('[X]', view.headlines[headline_index(view, 'Check Probe')]:get_property('status'))
+    view.current_row = headline_index(view, 'Check Probe')
+    view:toggle_or_quit()
+    assert.are.equal('[ ]', view.headlines[headline_index(view, 'Check Probe')]:get_property('status'))
+  end)
+
+  it('highlights the current cell', function()
+    local view = build_view({ '* Hl Probe' }, { overriding_columns_format = '%10ITEM %8TODO' })
+    local win = vim.api.nvim_open_win(view.bufnr, true, {
+      relative = 'editor',
+      row = 1,
+      col = 1,
+      width = 40,
+      height = 5,
+    })
+    view.current_row = headline_index(view, 'Hl Probe')
+    view.current_col = column_index(view, 'ITEM')
+    view:_goto_cell(view.current_row, view.current_col)
+
+    local ns = vim.api.nvim_create_namespace('orgmode_agenda_columns')
+    local marks = vim.api.nvim_buf_get_extmarks(view.bufnr, ns, 0, -1, { details = true })
+    assert.is_true(#marks >= 1)
+
+    OrgAgendaColumnsType.clear_highlights(view.bufnr)
+    marks = vim.api.nvim_buf_get_extmarks(view.bufnr, ns, 0, -1, { details = true })
+    assert.are.equal(0, #marks)
+    vim.api.nvim_win_close(win, true)
+  end)
+
+  it('attaches and clears buffer local column mappings', function()
+    local view = build_view({ '* Key Probe' }, { overriding_columns_format = '%ITEM %TODO' })
+    local bufnr = view.bufnr
+    local function lhs_set()
+      local set = {}
+      for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, 'n')) do
+        set[m.lhs] = true
+      end
+      return set
+    end
+
+    local keys = lhs_set()
+    assert.is_true(keys['h'] and keys['l'] and keys['j'] and keys['k'])
+    assert.is_true(keys['n'] and keys['p'] and keys['e'] and keys['v'])
+    assert.is_true(keys['1'] and keys['0'])
+
+    OrgAgendaColumnsType.clear_mappings(bufnr)
+    keys = lhs_set()
+    assert.is_nil(keys['h'])
+    assert.is_nil(keys['n'])
+    assert.is_nil(keys['1'])
+  end)
+end)

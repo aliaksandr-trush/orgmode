@@ -1,0 +1,906 @@
+local config = require('orgmode.config')
+local AgendaView = require('orgmode.agenda.view.init')
+local AgendaLine = require('orgmode.agenda.view.line')
+local AgendaLineToken = require('orgmode.agenda.view.token')
+local AgendaFilter = require('orgmode.agenda.filter')
+local Files = require('orgmode.files')
+local Parser = require('orgmode.columns.parser')
+local Cells = require('orgmode.columns.cells')
+local SortingStrategy = require('orgmode.agenda.sorting_strategy')
+local Promise = require('orgmode.utils.promise')
+local utils = require('orgmode.utils')
+local Input = require('orgmode.ui.input')
+
+---Extmarks marking the currently selected cell.
+local ns = vim.api.nvim_create_namespace('orgmode_agenda_columns')
+
+---Column view actions exposed in the agenda buffer. Only these keys are bound
+---and torn down, so unrelated agenda mappings are left untouched.
+local COLUMN_ACTIONS = {
+  move_left = true,
+  move_right = true,
+  move_up = true,
+  move_down = true,
+  next_value = true,
+  prev_value = true,
+  select_value = true,
+  view_value = true,
+  edit_value = true,
+  toggle_or_quit = true,
+}
+
+---Normalize a mapping definition (a single key or a list of keys) to a list.
+---@param mapping string|string[]|nil
+---@return string[]
+local function mapping_keys(mapping)
+  if type(mapping) == 'string' then
+    return { mapping }
+  end
+  if type(mapping) == 'table' then
+    return mapping
+  end
+  return {}
+end
+
+---@class OrgAgendaColumnsTypeOpts
+---@field files OrgFiles
+---@field highlighter OrgHighlighter
+---@field agenda_filter OrgAgendaFilter
+---@field filter? string
+---@field tag_filter? string
+---@field category_filter? string
+---@field agenda_files string|string[]|nil
+---@field header? string
+---@field sorting_strategy? OrgAgendaSortingStrategy[]
+---@field remove_tags? boolean
+---@field id? string
+---@field overriding_columns_format? string
+---@field on_edit? fun(headline: OrgHeadline, setter: fun(headline: OrgHeadline))
+
+---@class OrgAgendaColumnsType:OrgAgendaViewType
+---@field files OrgFiles
+---@field highlighter OrgHighlighter
+---@field agenda_filter OrgAgendaFilter
+---@field filter? OrgAgendaFilter
+---@field tag_filter? OrgAgendaFilter
+---@field category_filter? OrgAgendaFilter
+---@field agenda_files string|string[]|nil
+---@field header? string
+---@field sorting_strategy? OrgAgendaSortingStrategy[]
+---@field remove_tags? boolean
+---@field id? string
+---@field overriding_columns_format? string
+---@field on_edit? fun(headline: OrgHeadline, setter: fun(headline: OrgHeadline))
+---@field valid_filters OrgAgendaFilter[]
+---@field cells OrgColumnCells
+---@field columns OrgColumnSpec[]
+---@field allowed_values table<string, string[]>
+---@field headlines OrgHeadline[]
+---@field _widths? number[]
+---@field current_row number
+---@field current_col number
+---@field bufnr? number
+---@field view OrgAgendaView
+local OrgAgendaColumnsType = {}
+OrgAgendaColumnsType.__index = OrgAgendaColumnsType
+
+---@param opts OrgAgendaColumnsTypeOpts
+function OrgAgendaColumnsType:new(opts)
+  local this = setmetatable({
+    files = opts.files,
+    highlighter = opts.highlighter,
+    agenda_filter = opts.agenda_filter,
+    filter = opts.filter and AgendaFilter:new():parse(opts.filter, true) or nil,
+    tag_filter = opts.tag_filter and AgendaFilter:new({ types = { 'tags' } }):parse(opts.tag_filter, true) or nil,
+    category_filter = opts.category_filter and AgendaFilter:new({ types = { 'categories' } })
+      :parse(opts.category_filter, true) or nil,
+    agenda_files = opts.agenda_files,
+    header = opts.header,
+    sorting_strategy = opts.sorting_strategy or vim.tbl_get(config.org_agenda_sorting_strategy, 'agenda') or {},
+    id = opts.id,
+    remove_tags = type(opts.remove_tags) == 'boolean' and opts.remove_tags or config.org_agenda_remove_tags,
+    overriding_columns_format = opts.overriding_columns_format,
+    on_edit = opts.on_edit,
+    cells = Cells:new(),
+    columns = {},
+    allowed_values = {},
+    headlines = {},
+    current_row = 1,
+    current_col = 1,
+    bufnr = nil,
+    view = nil,
+  }, OrgAgendaColumnsType)
+  this.valid_filters = vim.tbl_filter(function(filter)
+    return filter and true or false
+  end, {
+    this.filter,
+    this.tag_filter,
+    this.category_filter,
+    this.agenda_filter,
+  })
+
+  this:_setup_agenda_files()
+  return this
+end
+
+function OrgAgendaColumnsType:prepare()
+  return Promise.resolve(self)
+end
+
+---Collect the headlines and resolve the column format. Run on every render so
+---that redo, filtering and clock updates reflect the current file state.
+function OrgAgendaColumnsType:_setup()
+  self:_collect_headlines()
+  local format = self:_resolve_format()
+  if format then
+    local columns_def = Parser.parse(format)
+    self.columns = columns_def and columns_def.columns or {}
+    self.allowed_values = columns_def and columns_def.allowed_values or {}
+  else
+    self.columns = {}
+    self.allowed_values = {}
+  end
+  self:_resolve_allowed_values()
+end
+
+---Resolve property references in allowed values (e.g. `Owner_ALL`) into the
+---actual values found on the collected headlines.
+function OrgAgendaColumnsType:_resolve_allowed_values()
+  local resolved = {}
+  for key, vals in pairs(self.allowed_values) do
+    if #vals == 1 and not vals[1]:match('^%[') then
+      local prop_name = vals[1]:lower()
+      local values = {}
+      for _, headline in ipairs(self.headlines) do
+        local prop_val = headline:get_property(prop_name)
+        if prop_val and prop_val ~= '' then
+          for v in prop_val:gmatch('[^,]+') do
+            v = vim.trim(v)
+            if v ~= '' then
+              table.insert(values, v)
+            end
+          end
+          if #values > 0 then
+            break
+          end
+        end
+      end
+      resolved[key] = #values > 0 and values or vals
+    else
+      resolved[key] = vals
+    end
+  end
+  self.allowed_values = resolved
+end
+
+function OrgAgendaColumnsType:redo()
+  if self.agenda_files then
+    self.files:load_sync(true)
+  end
+end
+
+function OrgAgendaColumnsType:_setup_agenda_files()
+  if not self.agenda_files then
+    return
+  end
+  self.files = Files:new({
+    paths = self.agenda_files,
+    cache = true,
+  }):load_sync(true)
+end
+
+function OrgAgendaColumnsType:_get_header()
+  if self.header then
+    return self.header
+  end
+  return 'Column view:'
+end
+
+---Resolve the column format following the Emacs order:
+---1. `org_agenda_overriding_columns_format` (custom command, then global)
+---2. `org_columns_default_format_for_agenda`
+---3. Format of the first agenda item (property, ancestor or file directive)
+---4. `org_columns_default_format`
+---@return string|nil
+function OrgAgendaColumnsType:_resolve_format()
+  local overriding = self.overriding_columns_format
+  if not overriding or overriding == '' then
+    overriding = config.org_agenda_overriding_columns_format
+  end
+  if overriding and overriding ~= '' then
+    return overriding
+  end
+
+  local agenda_default = config.org_columns_default_format_for_agenda
+  if agenda_default and agenda_default ~= '' then
+    return agenda_default
+  end
+
+  local first = self.headlines[1]
+  if first then
+    local format = Parser.get_columns_format_for_headline(first)
+    if format then
+      return format
+    end
+  end
+
+  local default_format = config.org_columns_default_format
+  if default_format and default_format ~= '' then
+    return default_format
+  end
+
+  return nil
+end
+
+function OrgAgendaColumnsType:_collect_headlines()
+  self.headlines = {}
+  for _, orgfile in ipairs(self.files:all()) do
+    for i, headline in ipairs(orgfile:get_opened_headlines()) do
+      if self:_matches_filters(headline) then
+        headline.index = i
+        table.insert(self.headlines, headline)
+      end
+    end
+  end
+  self:_sort(self.headlines)
+end
+
+---Cell value shown in the agenda view, honoring `org_agenda_remove_tags` by
+---hiding the TAGS column when enabled.
+---@param headline OrgHeadline
+---@param column OrgColumnSpec
+---@return string
+function OrgAgendaColumnsType:_cell_value(headline, column)
+  if self.remove_tags and column.name == 'TAGS' then
+    return ''
+  end
+  return self.cells:get_value(headline, column)
+end
+
+---@param bufnr? number
+function OrgAgendaColumnsType:render(bufnr)
+  self.bufnr = bufnr or 0
+  self:_setup()
+  self.cells:clear_cache()
+  local agendaView = AgendaView:new({ bufnr = self.bufnr, highlighter = self.highlighter })
+
+  -- Custom view with no headlines: render empty block
+  if self.id and config.org_agenda_hide_empty_blocks and #self.headlines == 0 then
+    self.view = agendaView:render()
+    return self.view
+  end
+
+  agendaView:add_line(AgendaLine:single_token({
+    content = self:_get_header(),
+    hl_group = '@org.agenda.header',
+  }))
+
+  local widths = Cells.compute_widths(self.columns, function(headline, col)
+    return self:_cell_value(headline, col)
+  end, self.headlines)
+  self._widths = widths
+
+  agendaView:add_line(self:_build_header_row(widths))
+
+  for _, headline in ipairs(self.headlines) do
+    agendaView:add_line(self:_build_row(headline, widths))
+  end
+
+  if self:_has_summary_columns() then
+    agendaView:add_line(self:_build_summary_row(widths))
+  end
+
+  self.view = agendaView:render()
+  self:_setup_mappings()
+  self:_highlight_current_cell()
+  return self.view
+end
+
+---@param widths number[]
+---@return OrgAgendaLine
+function OrgAgendaColumnsType:_build_header_row(widths)
+  local line = AgendaLine:new({ separator = '' })
+  for col_idx, col in ipairs(self.columns) do
+    line:add_token(AgendaLineToken:new({ content = '│', hl_group = '@org.column.border' }))
+    line:add_token(AgendaLineToken:new({
+      content = ' ' .. Cells.fit(col.title, widths[col_idx]) .. ' ',
+      hl_group = '@org.column.header',
+    }))
+  end
+  line:add_token(AgendaLineToken:new({ content = '│', hl_group = '@org.column.border' }))
+  return line
+end
+
+---@param headline OrgHeadline
+---@param widths number[]
+---@return OrgAgendaLine
+function OrgAgendaColumnsType:_build_row(headline, widths)
+  local line = AgendaLine:new({
+    headline = headline,
+    separator = '',
+    line_hl_group = headline:is_clocked_in() and 'Visual' or nil,
+  })
+  for col_idx, col in ipairs(self.columns) do
+    line:add_token(AgendaLineToken:new({ content = '│', hl_group = '@org.column.border' }))
+    local value = self:_cell_value(headline, col)
+    line:add_token(AgendaLineToken:new({
+      content = ' ' .. Cells.fit(value, widths[col_idx]) .. ' ',
+      hl_group = '@org.column.value',
+    }))
+  end
+  line:add_token(AgendaLineToken:new({ content = '│', hl_group = '@org.column.border' }))
+  return line
+end
+
+---@param widths number[]
+---@return OrgAgendaLine
+function OrgAgendaColumnsType:_build_summary_row(widths)
+  local line = AgendaLine:new({ separator = '' })
+  for col_idx, col in ipairs(self.columns) do
+    line:add_token(AgendaLineToken:new({ content = '│', hl_group = '@org.column.border' }))
+    local content = ''
+    if col.summary_type then
+      local values = {}
+      for _, headline in ipairs(self.headlines) do
+        table.insert(values, self:_cell_value(headline, col))
+      end
+      local summary = Cells.compute_summary(values, col.summary_type)
+      if summary then
+        content = summary
+      end
+    end
+    line:add_token(AgendaLineToken:new({
+      content = ' ' .. Cells.fit(content, widths[col_idx]) .. ' ',
+      hl_group = '@org.column.summary',
+    }))
+  end
+  line:add_token(AgendaLineToken:new({ content = '│', hl_group = '@org.column.border' }))
+  return line
+end
+
+function OrgAgendaColumnsType:_has_summary_columns()
+  for _, col in ipairs(self.columns) do
+    if col.summary_type then
+      return true
+    end
+  end
+  return false
+end
+
+---@return OrgAgendaLine[]
+function OrgAgendaColumnsType:get_lines()
+  return self.view.lines
+end
+
+---@param row number
+---@return OrgAgendaLine | nil
+function OrgAgendaColumnsType:get_line(row)
+  return utils.find(self.view.lines, function(line)
+    return line.line_nr == row
+  end)
+end
+
+---Rebuild a single row in place after an inline edit (e.g. TODO state change).
+---@param agenda_line OrgAgendaLine
+---@param headline OrgHeadline
+function OrgAgendaColumnsType:rerender_agenda_line(agenda_line, headline)
+  if not self._widths then
+    return
+  end
+  local line = self:_build_row(headline, self._widths)
+  self.view:replace_line(agenda_line, line)
+end
+
+-- ---------------------------------------------------------------------------
+-- Cell navigation and editing
+-- ---------------------------------------------------------------------------
+
+---@return OrgAgendaLine[]
+function OrgAgendaColumnsType:_data_lines()
+  local lines = {}
+  if self.view then
+    for _, line in ipairs(self.view.lines) do
+      if line.headline then
+        table.insert(lines, line)
+      end
+    end
+  end
+  return lines
+end
+
+---Compute the buffer byte range (0-based, end exclusive) of a cell so it can be
+---highlighted. Mirrors the layout used by `_build_row`: `│` + ` value ` per column.
+---@param row number
+---@param col number
+---@return { line_nr: number, start_col: number, end_col: number }|nil
+function OrgAgendaColumnsType:_cell_range(row, col)
+  if not self.view or not self._widths or not self.bufnr then
+    return nil
+  end
+  local line = self:_data_lines()[row]
+  if not line then
+    return nil
+  end
+  local buf_line = vim.api.nvim_buf_get_lines(self.bufnr, line.line_nr - 1, line.line_nr, false)[1]
+  if not buf_line then
+    return nil
+  end
+
+  local block_start = 1
+  for i = 1, col - 1 do
+    block_start = block_start + (self._widths[i] or 0) + 3
+  end
+  local last_vcol = block_start + 2 + (self._widths[col] or 0)
+  local line_vcol = vim.fn.virtcol({ line.line_nr, '$' })
+  if block_start + 1 > line_vcol then
+    return nil
+  end
+
+  local ok1, start_byte = pcall(vim.fn.virtcol2col, 0, line.line_nr, block_start + 1)
+  if not ok1 or not start_byte or start_byte < 1 then
+    return nil
+  end
+
+  local next_byte = #buf_line + 1
+  if last_vcol < line_vcol then
+    local ok2, b = pcall(vim.fn.virtcol2col, 0, line.line_nr, last_vcol + 1)
+    if ok2 and b and b >= 1 then
+      next_byte = b
+    end
+  end
+
+  return { line_nr = line.line_nr, start_col = start_byte - 1, end_col = next_byte - 1 }
+end
+
+---Highlight the cell under `current_row`/`current_col` like the file column view.
+function OrgAgendaColumnsType:_highlight_current_cell()
+  if not self.bufnr or not vim.api.nvim_buf_is_valid(self.bufnr) or #self.columns == 0 then
+    return
+  end
+  -- `virtcol`/`virtcol2col` operate on the current window, so only highlight
+  -- while the column view buffer is actually displayed.
+  if vim.fn.bufnr() ~= self.bufnr then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(self.bufnr, ns, 0, -1)
+  local range = self:_cell_range(self.current_row, self.current_col)
+  if not range then
+    return
+  end
+  pcall(vim.api.nvim_buf_set_extmark, self.bufnr, ns, range.line_nr - 1, range.start_col, {
+    end_col = range.end_col,
+    hl_group = '@org.column.current',
+  })
+end
+
+---Remove the cell highlight extmarks (used when leaving the column view).
+---@param bufnr number
+function OrgAgendaColumnsType.clear_highlights(bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+end
+
+---Update `current_row`/`current_col` from the cursor when it is on a data row.
+function OrgAgendaColumnsType:_sync_cursor()
+  if not self.view or not self._widths or #self.columns == 0 or not self.bufnr then
+    return
+  end
+  if vim.fn.bufnr() ~= self.bufnr then
+    return
+  end
+  local line_nr = vim.fn.line('.')
+  local row
+  for i, line in ipairs(self:_data_lines()) do
+    if line.line_nr == line_nr then
+      row = i
+      break
+    end
+  end
+  if not row then
+    return
+  end
+  self.current_row = row
+
+  local vcol = vim.fn.virtcol('.')
+  local block_start = 1
+  local col = #self.columns
+  for i, w in ipairs(self._widths) do
+    if vcol <= block_start + w + 2 then
+      col = i
+      break
+    end
+    block_start = block_start + w + 3
+  end
+  self.current_col = col
+  self:_highlight_current_cell()
+end
+
+---Move the cursor to the cell at `row`/`col` (1-based).
+function OrgAgendaColumnsType:_goto_cell(row, col)
+  if not self.view or not self._widths or not self.bufnr then
+    return
+  end
+  if vim.fn.bufnr() ~= self.bufnr then
+    return
+  end
+  local line = self:_data_lines()[row]
+  if not line then
+    return
+  end
+  local block_start = 1
+  for i = 1, col - 1 do
+    block_start = block_start + (self._widths[i] or 0) + 3
+  end
+  local line_vcol = vim.fn.virtcol({ line.line_nr, '$' })
+  local vcol = math.min(block_start + 2, math.max(1, line_vcol))
+  local ok, byte = pcall(vim.fn.virtcol2col, 0, line.line_nr, vcol)
+  if not ok or not byte or byte < 1 then
+    byte = 1
+  end
+  pcall(vim.api.nvim_win_set_cursor, 0, { line.line_nr, byte - 1 })
+  self:_highlight_current_cell()
+end
+
+function OrgAgendaColumnsType:_current_headline()
+  return self.headlines[self.current_row]
+end
+
+function OrgAgendaColumnsType:_current_column()
+  return self.columns[self.current_col]
+end
+
+function OrgAgendaColumnsType:move_left()
+  if self.current_col > 1 then
+    self.current_col = self.current_col - 1
+    self:_goto_cell(self.current_row, self.current_col)
+  end
+end
+
+function OrgAgendaColumnsType:move_right()
+  if self.current_col < #self.columns then
+    self.current_col = self.current_col + 1
+    self:_goto_cell(self.current_row, self.current_col)
+  end
+end
+
+function OrgAgendaColumnsType:move_up()
+  if self.current_row > 1 then
+    self.current_row = self.current_row - 1
+    self:_goto_cell(self.current_row, self.current_col)
+  end
+end
+
+function OrgAgendaColumnsType:move_down()
+  if self.current_row < #self.headlines then
+    self.current_row = self.current_row + 1
+    self:_goto_cell(self.current_row, self.current_col)
+  end
+end
+
+---Candidate values for a column, used by numbered selection and cycling.
+---@param col OrgColumnSpec
+---@return string[]|nil
+function OrgAgendaColumnsType:_allowed_values_for(col)
+  if col.name == 'TODO' then
+    local values = {}
+    for _, todo in ipairs(config:get_todo_keywords():all()) do
+      table.insert(values, todo.value)
+    end
+    return values
+  elseif col.name == 'PRIORITY' then
+    local range = config:get_priority_range()
+    local PriorityState = require('orgmode.objects.priority_state')
+    local values = {}
+    local current = PriorityState:new(range.highest, range)
+    table.insert(values, current.priority)
+    while current.priority ~= range.lowest do
+      current:decrease()
+      table.insert(values, current.priority)
+    end
+    return values
+  end
+
+  local allowed = self.allowed_values[col.name .. '_ALL']
+  if allowed and #allowed > 0 then
+    return allowed
+  end
+  if col.name:upper() == 'ITEM' then
+    return nil
+  end
+  return { '[ ]', '[X]' }
+end
+
+---Apply a new value to a cell, writing it through the agenda when available.
+---@param headline OrgHeadline
+---@param col OrgColumnSpec
+---@param value string
+function OrgAgendaColumnsType:_apply_value(headline, col, value)
+  local setter = function(h)
+    if col.is_special then
+      if col.name == 'TODO' then
+        h:set_todo(value)
+      elseif col.name == 'PRIORITY' then
+        h:set_priority(value:match('%[#(.-)%]') or value)
+      elseif col.name == 'TAGS' then
+        h:set_tags(value)
+      end
+    else
+      h:set_property(col.name:lower(), value)
+    end
+  end
+
+  if self.on_edit then
+    self.on_edit(headline, setter)
+  else
+    setter(headline)
+    self:_refresh_row(headline)
+  end
+end
+
+function OrgAgendaColumnsType:_refresh_row(headline)
+  if not self.view then
+    return
+  end
+  for _, line in ipairs(self.view.lines) do
+    if line.headline == headline then
+      self:rerender_agenda_line(line, headline)
+      return
+    end
+  end
+end
+
+function OrgAgendaColumnsType:select_value(n)
+  if n == 0 then
+    n = 10
+  end
+  local headline = self:_current_headline()
+  local col = self:_current_column()
+  if not headline or not col then
+    return
+  end
+  local allowed = self:_allowed_values_for(col)
+  if not allowed then
+    return
+  end
+  if n <= #allowed then
+    self:_apply_value(headline, col, allowed[n])
+  end
+end
+
+function OrgAgendaColumnsType:next_value()
+  self:_change_value(1)
+end
+
+function OrgAgendaColumnsType:prev_value()
+  self:_change_value(-1)
+end
+
+function OrgAgendaColumnsType:_change_value(direction)
+  local headline = self:_current_headline()
+  local col = self:_current_column()
+  if not headline or not col then
+    return
+  end
+
+  if col.name == 'TODO' then
+    local TodoState = require('orgmode.objects.todo_state')
+    local ts = TodoState:new({ current_state = headline:get_todo() })
+    local next_state = direction > 0 and ts:get_next() or ts:get_prev()
+    if next_state then
+      self:_apply_value(headline, col, next_state.value)
+    end
+    return
+  elseif col.name == 'PRIORITY' then
+    local PriorityState = require('orgmode.objects.priority_state')
+    local ps = PriorityState:new(headline:get_priority(), config:get_priority_range())
+    local value = direction > 0 and ps:increase() or ps:decrease()
+    self:_apply_value(headline, col, value)
+    return
+  end
+
+  local allowed = self:_allowed_values_for(col)
+  if not allowed or #allowed == 0 then
+    return
+  end
+  local current = self:_cell_value(headline, col)
+  local idx = 1
+  for i, v in ipairs(allowed) do
+    if v == current then
+      idx = i
+      break
+    end
+  end
+  idx = idx + direction
+  if idx < 1 then
+    idx = #allowed
+  end
+  if idx > #allowed then
+    idx = 1
+  end
+  self:_apply_value(headline, col, allowed[idx])
+end
+
+function OrgAgendaColumnsType:view_value()
+  local headline = self:_current_headline()
+  local col = self:_current_column()
+  if not headline or not col then
+    return
+  end
+  utils.echo_info(self:_cell_value(headline, col), nil, true)
+end
+
+function OrgAgendaColumnsType:toggle_or_quit()
+  local headline = self:_current_headline()
+  local col = self:_current_column()
+  if not headline or not col or col.is_special then
+    return
+  end
+  local value = self:_cell_value(headline, col)
+  if not value:match('^%s*%[.%]') then
+    return
+  end
+  local new_val = value:gsub('%[(.)%]', function(inner)
+    return inner:upper() == 'X' and '[ ]' or '[X]'
+  end, 1)
+  self:_apply_value(headline, col, new_val)
+end
+
+function OrgAgendaColumnsType:edit_value()
+  local headline = self:_current_headline()
+  local col = self:_current_column()
+  if not headline or not col then
+    return
+  end
+
+  if col.name == 'TODO' then
+    local TodoState = require('orgmode.objects.todo_state')
+    local ts = TodoState:new({ current_state = headline:get_todo() })
+    local next_state = ts:open_fast_access()
+    if next_state then
+      self:_apply_value(headline, col, next_state.value)
+    end
+    return
+  elseif col.name == 'PRIORITY' then
+    local PriorityState = require('orgmode.objects.priority_state')
+    local ps = PriorityState:new(headline:get_priority(), config:get_priority_range())
+    local new_prio = ps:prompt_user()
+    if new_prio then
+      self:_apply_value(headline, col, new_prio)
+    end
+    return
+  elseif col.name == 'TAGS' then
+    local current_tags = utils.tags_to_string(headline:get_own_tags())
+    return Input.open('Tags: ', current_tags, function(arg_lead)
+      return utils.prompt_autocomplete(arg_lead, self.files:get_tags())
+    end):next(function(tags)
+      if tags then
+        self:_apply_value(headline, col, tags)
+      end
+    end)
+  end
+
+  local current_val = self:_cell_value(headline, col)
+  local allowed = self.allowed_values[col.name .. '_ALL']
+  if allowed and #allowed > 0 then
+    local items = vim.deepcopy(allowed)
+    table.insert(items, 1, '')
+    vim.ui.select(items, {
+      prompt = ('Select %s: '):format(col.title or col.name),
+      format_item = function(item)
+        return item == '' and '(clear)' or item
+      end,
+    }, function(choice)
+      if choice then
+        self:_apply_value(headline, col, choice)
+      end
+    end)
+    return
+  end
+
+  local input = vim.fn.input(('Edit %s: '):format(col.title or col.name), current_val)
+  if input and vim.trim(input) ~= '' then
+    self:_apply_value(headline, col, input)
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Mappings
+-- ---------------------------------------------------------------------------
+
+function OrgAgendaColumnsType:_setup_mappings()
+  if not self.bufnr then
+    return
+  end
+  local maps = config:get_mappings('column_view', self.bufnr)
+  if not maps then
+    return
+  end
+  for name, map in pairs(maps) do
+    if COLUMN_ACTIONS[name] and map.map_entry then
+      if name == 'select_value' then
+        self:_setup_select_value_mapping(map)
+      else
+        map.map_entry
+          :with_handler(function()
+            if not self.view or not self.view:is_in_range() then
+              return
+            end
+            self:_sync_cursor()
+            return self[name](self)
+          end)
+          :attach(map.default_map, map.user_map, map.opts)
+      end
+    end
+  end
+end
+
+---@param map table
+function OrgAgendaColumnsType:_setup_select_value_mapping(map)
+  local keys = mapping_keys(map.user_map or map.default_map)
+  if #keys == 0 then
+    return
+  end
+  local opts = vim.deepcopy(map.opts or {})
+  local prefix = opts.prefix
+  opts.prefix = nil
+  opts.nowait = true
+  opts.silent = true
+  opts.buffer = self.bufnr
+  opts.desc = 'org select allowed value'
+  for idx, key in ipairs(keys) do
+    if prefix then
+      key = key:gsub('<prefix>', prefix)
+    end
+    vim.keymap.set('n', key, function()
+      if not self.view or not self.view:is_in_range() then
+        return
+      end
+      self:_sync_cursor()
+      self:select_value(idx)
+    end, opts)
+  end
+end
+
+---Remove the column view mappings from `bufnr` without touching other maps.
+---@param bufnr number
+function OrgAgendaColumnsType.clear_mappings(bufnr)
+  local maps = config:get_mappings('column_view', bufnr)
+  if not maps then
+    return
+  end
+  for name, map in pairs(maps) do
+    if COLUMN_ACTIONS[name] and map.map_entry then
+      for _, keys in ipairs({ mapping_keys(map.default_map), mapping_keys(map.user_map) }) do
+        for _, key in ipairs(keys) do
+          pcall(vim.keymap.del, 'n', key, { buffer = bufnr })
+        end
+      end
+    end
+  end
+end
+
+function OrgAgendaColumnsType:_matches_filters(headline)
+  for _, filter in ipairs(self.valid_filters) do
+    if filter and not filter:matches(headline) then
+      return false
+    end
+  end
+  return true
+end
+
+---@private
+---@param headlines OrgHeadline[]
+function OrgAgendaColumnsType:_sort(headlines)
+  local make_entry = function(headline)
+    return {
+      headline = headline,
+      index = headline.index,
+      is_day_match = false,
+    }
+  end
+  return SortingStrategy.sort(headlines, self.sorting_strategy, make_entry)
+end
+
+return OrgAgendaColumnsType

@@ -10,12 +10,24 @@ local SPECIAL_COLUMNS = {
   CLOCKSUM_T = true,
   AGE = true,
   TAGS = true,
+  ALLTAGS = true,
   TODO = true,
   PRIORITY = true,
   CATEGORY = true,
   SCHEDULED = true,
   DEADLINE = true,
+  CLOSED = true,
+  FILE = true,
+  BLOCKED = true,
+  TIMESTAMP = true,
+  TIMESTAMP_IA = true,
 }
+
+---@param name string
+---@return boolean
+function Parser.is_special_column(name)
+  return name ~= nil and SPECIAL_COLUMNS[name:upper()] == true
+end
 
 ---@param format_string string
 ---@return OrgColumnsDefinition
@@ -163,7 +175,7 @@ function Parser._parse_column_spec(spec)
       or first:match('^min$')
       or first:match('^max$')
       or first:match('^mean$')
-      or first:match('^X/?$')
+      or first:match('^X[/%%]?$')
       or first:match('^@')
       or first:match('^est%+$')
 

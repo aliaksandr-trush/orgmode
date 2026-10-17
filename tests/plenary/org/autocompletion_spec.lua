@@ -238,12 +238,18 @@ describe('Autocompletion', function()
         { menu = '[Org]', word = '%TODO' },
         { menu = '[Org]', word = '%PRIORITY' },
         { menu = '[Org]', word = '%TAGS' },
+        { menu = '[Org]', word = '%ALLTAGS' },
         { menu = '[Org]', word = '%CATEGORY' },
         { menu = '[Org]', word = '%SCHEDULED' },
         { menu = '[Org]', word = '%DEADLINE' },
+        { menu = '[Org]', word = '%CLOSED' },
         { menu = '[Org]', word = '%CLOCKSUM' },
         { menu = '[Org]', word = '%CLOCKSUM_T' },
         { menu = '[Org]', word = '%AGE' },
+        { menu = '[Org]', word = '%FILE' },
+        { menu = '[Org]', word = '%BLOCKED' },
+        { menu = '[Org]', word = '%TIMESTAMP' },
+        { menu = '[Org]', word = '%TIMESTAMP_IA' },
       }, result)
 
       setup_file('#+COLUMNS: %T')
@@ -251,6 +257,8 @@ describe('Autocompletion', function()
       assert.are.same({
         { menu = '[Org]', word = '%TODO' },
         { menu = '[Org]', word = '%TAGS' },
+        { menu = '[Org]', word = '%TIMESTAMP' },
+        { menu = '[Org]', word = '%TIMESTAMP_IA' },
       }, result)
     end)
 
@@ -260,12 +268,18 @@ describe('Autocompletion', function()
       assert.are.same({
         { menu = '[Org]', word = '%Effort{+}' },
         { menu = '[Org]', word = '%Effort{:}' },
+        { menu = '[Org]', word = '%Effort{:min}' },
+        { menu = '[Org]', word = '%Effort{:max}' },
+        { menu = '[Org]', word = '%Effort{:mean}' },
         { menu = '[Org]', word = '%Effort{$}' },
         { menu = '[Org]', word = '%Effort{min}' },
         { menu = '[Org]', word = '%Effort{max}' },
         { menu = '[Org]', word = '%Effort{mean}' },
         { menu = '[Org]', word = '%Effort{X}' },
         { menu = '[Org]', word = '%Effort{X/}' },
+        { menu = '[Org]', word = '%Effort{X%}' },
+        { menu = '[Org]', word = '%Effort{@min}' },
+        { menu = '[Org]', word = '%Effort{@max}' },
         { menu = '[Org]', word = '%Effort{@mean}' },
         { menu = '[Org]', word = '%Effort{est+}' },
         { menu = '[Org]', word = '%Effort{+;%.2f}' },

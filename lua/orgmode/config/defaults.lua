@@ -233,6 +233,10 @@ local DefaultConfig = {
       delete_column = '<S-M-Left>',
       move_column_left = '<M-Left>',
       move_column_right = '<M-Right>',
+      move_row_up = '<M-Up>',
+      move_row_down = '<M-Down>',
+      edit_attributes = 's',
+      refresh = 'r',
       show_help = 'g?',
     },
     text_objects = {

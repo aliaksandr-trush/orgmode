@@ -1,6 +1,7 @@
 local Date = require('orgmode.objects.date')
 local Duration = require('orgmode.objects.duration')
 local Summary = require('orgmode.columns.summary')
+local utils = require('orgmode.utils')
 
 ---Compute and render individual column values shared between the overlay
 ---column view (org buffer) and the agenda column view.
@@ -67,6 +68,8 @@ function Cells:get_special_value(headline, name)
     return ''
   elseif name == 'TAGS' then
     return headline:tags_to_string()
+  elseif name == 'ALLTAGS' then
+    return self:get_all_tags(headline)
   elseif name == 'TODO' then
     return headline:get_todo() or ''
   elseif name == 'PRIORITY' then
@@ -86,8 +89,76 @@ function Cells:get_special_value(headline, name)
       return deadline:to_date_string()
     end
     return ''
+  elseif name == 'CLOSED' then
+    local closed = headline:get_closed_date()
+    if closed then
+      return closed:to_date_string()
+    end
+    return ''
+  elseif name == 'TIMESTAMP' then
+    local date = headline:get_non_plan_dates()[1]
+    if date then
+      return date:to_date_string()
+    end
+    return ''
+  elseif name == 'TIMESTAMP_IA' then
+    for _, date in ipairs(headline:get_non_plan_dates()) do
+      if date.active == false then
+        return date:to_date_string()
+      end
+    end
+    return ''
+  elseif name == 'FILE' then
+    return vim.fn.fnamemodify(headline.file.filename, ':t')
+  elseif name == 'BLOCKED' then
+    return self:is_blocked(headline) and 't' or ''
   end
   return ''
+end
+
+---All tags of a headline, including inherited and file-level tags.
+---Unlike the `TAGS` special column this ignores `org_use_tag_inheritance`.
+---@param headline OrgHeadline
+---@return string
+function Cells:get_all_tags(headline)
+  local tags = {}
+  local own_tags = headline:get_own_tags()
+  local parent = headline:get_parent_headline()
+  while parent do
+    utils.concat(tags, parent:get_own_tags())
+    parent = parent:get_parent_headline()
+  end
+  utils.concat(tags, headline.file:get_filetags())
+  utils.concat(tags, own_tags)
+  return vim.tbl_isempty(tags) and '' or utils.tags_to_string(tags, true)
+end
+
+---Whether a headline is currently blocked, mirroring `org-entry-blocked-p`.
+---A not-done TODO is blocked when it has unfinished children or when it has an
+---unfinished sibling and its parent is marked with the `ORDERED` property.
+---@param headline OrgHeadline
+---@return boolean
+function Cells:is_blocked(headline)
+  if not headline:is_todo() then
+    return false
+  end
+  if headline:get_property('NOBLOCKING', false) then
+    return false
+  end
+  for _, child in ipairs(headline:get_child_headlines()) do
+    if not child:is_done() then
+      return true
+    end
+  end
+  local parent = headline:get_parent_headline()
+  if parent and parent:get_property('ORDERED', false) ~= nil then
+    for _, sibling in ipairs(parent:get_child_headlines()) do
+      if not sibling:is_same(headline) and not sibling:is_done() then
+        return true
+      end
+    end
+  end
+  return false
 end
 
 ---@param headline OrgHeadline

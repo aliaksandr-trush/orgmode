@@ -498,6 +498,22 @@ return {
       'org_mappings.org_columns_move_column_right',
       { opts = { desc = 'org move column right', help_desc = 'Move current column right' } }
     ),
+    move_row_up = m.action(
+      'org_mappings.org_columns_move_row_up',
+      { opts = { desc = 'org move row up', help_desc = 'Move current row up' } }
+    ),
+    move_row_down = m.action(
+      'org_mappings.org_columns_move_row_down',
+      { opts = { desc = 'org move row down', help_desc = 'Move current row down' } }
+    ),
+    edit_attributes = m.action(
+      'org_mappings.org_columns_edit_attributes',
+      { opts = { desc = 'org edit column attributes', help_desc = 'Edit current column attributes' } }
+    ),
+    refresh = m.action(
+      'org_mappings.org_columns_refresh',
+      { opts = { desc = 'org refresh column view', help_desc = 'Refresh column view' } }
+    ),
     show_help = m.action(
       'org_mappings.show_help',
       { args = { 'column_view' }, opts = { desc = 'org show help', help_desc = 'Show this help' } }

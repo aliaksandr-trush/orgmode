@@ -427,6 +427,38 @@ describe('Agenda Columns Type', function()
     assert.is_not_nil(column_index(view, 'OWNER'))
   end)
 
+  it('edits the current column attributes and keeps them across renders', function()
+    local view = build_view({ '* Edit Probe' }, { overriding_columns_format = '%10ITEM %8TODO' })
+    view.current_row = 1
+    view.current_col = column_index(view, 'TODO')
+
+    local original_input = vim.fn.input
+    local responses = { 'Owner', 'Owner?', '12', '+' }
+    local idx = 0
+    vim.fn.input = function()
+      idx = idx + 1
+      return responses[idx]
+    end
+    view:edit_attributes()
+    vim.fn.input = original_input
+
+    assert.are.equal('OWNER', view.columns[view.current_col].name)
+    assert.are.equal('Owner?', view.columns[view.current_col].title)
+    assert.are.equal(12, view.columns[view.current_col].width)
+    assert.are.equal('+', view.columns[view.current_col].summary_type)
+
+    view:render(view.bufnr)
+    assert.are.equal('OWNER', view.columns[view.current_col].name)
+    assert.are.equal(12, view.columns[view.current_col].width)
+  end)
+
+  it('refreshes the column display', function()
+    local view = build_view({ '* Refresh Probe' }, { overriding_columns_format = '%10ITEM %8TODO' })
+    assert.has_no.errors(function()
+      view:refresh()
+    end)
+  end)
+
   it('deletes the current column', function()
     local view = build_view({ '* Delete Probe' }, { overriding_columns_format = '%10ITEM %TODO' })
     view.current_row = 1
@@ -508,6 +540,7 @@ describe('Agenda Columns Type', function()
     assert.is_true(keys['a'] and keys['<lt>'] and keys['>'] and keys['g?'])
     assert.is_true(keys['<M-S-Right>'] and keys['<M-S-Left>'])
     assert.is_true(keys['<M-Left>'] and keys['<M-Right>'])
+    assert.is_true(keys['s'] and keys['r'])
 
     OrgAgendaColumnsType.clear_mappings(bufnr)
     keys = lhs_set()
@@ -517,6 +550,7 @@ describe('Agenda Columns Type', function()
     assert.is_nil(keys['a'])
     assert.is_nil(keys['<lt>'])
     assert.is_nil(keys['g?'])
+    assert.is_nil(keys['s'])
   end)
 
   it('restores pre-existing buffer local mappings on clear', function()

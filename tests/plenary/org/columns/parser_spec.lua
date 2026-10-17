@@ -71,11 +71,45 @@ describe('Column Parser', function()
   end)
 
   it('recognizes special columns', function()
-    local special = { 'ITEM', 'CLOCKSUM', 'CLOCKSUM_T', 'AGE', 'TAGS', 'TODO', 'PRIORITY', 'CATEGORY' }
+    local special = {
+      'ITEM',
+      'CLOCKSUM',
+      'CLOCKSUM_T',
+      'AGE',
+      'TAGS',
+      'ALLTAGS',
+      'TODO',
+      'PRIORITY',
+      'CATEGORY',
+      'SCHEDULED',
+      'DEADLINE',
+      'CLOSED',
+      'FILE',
+      'BLOCKED',
+      'TIMESTAMP',
+      'TIMESTAMP_IA',
+    }
     for _, name in ipairs(special) do
       local format = '%' .. name
       local result = Parser.parse(format)
       assert.are.equal(true, result.columns[1].is_special, name .. ' should be special')
+    end
+  end)
+
+  it('parses extended summary types', function()
+    local cases = {
+      { 'X%', 'X%' },
+      { ':min', ':min' },
+      { ':max', ':max' },
+      { ':mean', ':mean' },
+      { '@min', '@min' },
+      { '@max', '@max' },
+      { '@mean', '@mean' },
+    }
+    for _, case in ipairs(cases) do
+      local result = Parser.parse('%10Effort{' .. case[1] .. '}')
+      assert.are.equal(case[2], result.columns[1].summary_type, case[1] .. ' should be a summary type')
+      assert.is_nil(result.columns[1].allowed_values, case[1] .. ' should not be allowed values')
     end
   end)
 end)

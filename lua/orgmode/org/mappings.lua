@@ -96,6 +96,7 @@ function OrgMappings:org_columns()
   local view = ColumnView:new({
     files = self.files,
     headlines = headlines,
+    subtree = headline ~= nil,
     columns_def = columns_def,
     on_quit = function()
       self.column_view = nil
@@ -167,6 +168,20 @@ function OrgMappings:org_columns_move_down()
   local view = self:_get_column_view()
   if view then
     view:move_down()
+  end
+end
+
+function OrgMappings:org_columns_move_row_up()
+  local view = self:_get_column_view()
+  if view then
+    view:move_row_up()
+  end
+end
+
+function OrgMappings:org_columns_move_row_down()
+  local view = self:_get_column_view()
+  if view then
+    view:move_row_down()
   end
 end
 
@@ -259,6 +274,20 @@ function OrgMappings:org_columns_move_column_right()
   local view = self:_get_column_view()
   if view then
     view:move_column_right()
+  end
+end
+
+function OrgMappings:org_columns_edit_attributes()
+  local view = self:_get_column_view()
+  if view then
+    view:edit_attributes()
+  end
+end
+
+function OrgMappings:org_columns_refresh()
+  local view = self:_get_column_view()
+  if view then
+    view:refresh()
   end
 end
 

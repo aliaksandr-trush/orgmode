@@ -21,6 +21,7 @@ describe('ColumnView', function()
     local view = ColumnView:new({
       files = require('orgmode').files,
       headlines = headlines,
+      subtree = true,
       columns_def = columns_def,
       bufnr = file:bufnr(),
     })
@@ -95,6 +96,113 @@ describe('ColumnView', function()
     })
 
     assert.are.equal('0:45', view.rows[1].cells[1].summary)
+  end)
+
+  it('summarizes a checkbox column with "X%"', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %10Approved{X%}',
+      ':END:',
+      '** Child 1',
+      ':PROPERTIES:',
+      ':Approved: [X]',
+      ':END:',
+      '** Child 2',
+      ':PROPERTIES:',
+      ':Approved: [ ]',
+      ':END:',
+    })
+
+    assert.are.equal('[50%]', view.rows[1].cells[1].summary)
+  end)
+
+  it('summarizes a duration column with ":min"', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %10Effort{:min}',
+      ':END:',
+      '** Child 1',
+      ':PROPERTIES:',
+      ':Effort: 0:30',
+      ':END:',
+      '** Child 2',
+      ':PROPERTIES:',
+      ':Effort: 1:00',
+      ':END:',
+    })
+
+    assert.are.equal('0:30', view.rows[1].cells[1].summary)
+  end)
+
+  it('renders the ALLTAGS special column including inherited tags', function()
+    local view = create_view({
+      '* Parent  :ptag:',
+      ':PROPERTIES:',
+      ':COLUMNS: %20ALLTAGS',
+      ':END:',
+      '** Child  :ctag:',
+    })
+
+    assert.are.equal(':ptag:', view.rows[1].cells[1].value)
+    assert.are.equal(':ctag:ptag:', view.rows[2].cells[1].value)
+  end)
+
+  it('renders the CLOSED special column', function()
+    local view = create_view({
+      '#+COLUMNS: %20CLOSED',
+      '* Done task',
+      'CLOSED: [2024-01-01 Mon 10:00]',
+    })
+
+    assert.are.equal('2024-01-01 Mon', view.rows[1].cells[1].value)
+  end)
+
+  it('renders the FILE special column', function()
+    local view = create_view({
+      '#+COLUMNS: %20FILE',
+      '* Task',
+    })
+
+    assert.are.equal('columns.org', view.rows[1].cells[1].value)
+  end)
+
+  it('renders the TIMESTAMP and TIMESTAMP_IA special columns', function()
+    local view = create_view({
+      '#+COLUMNS: %20TIMESTAMP %20TIMESTAMP_IA',
+      '* Task',
+      'Some text <2024-01-01 Mon> and [2024-02-02 Fri]',
+    })
+
+    assert.are.equal('2024-01-01 Mon', view.rows[1].cells[1].value)
+    assert.are.equal('2024-02-02 Fri', view.rows[1].cells[2].value)
+  end)
+
+  it('renders the BLOCKED special column', function()
+    local view = create_view({
+      '* TODO Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %20BLOCKED',
+      ':END:',
+      '** TODO Child',
+    })
+
+    assert.are.equal('t', view.rows[1].cells[1].value)
+    assert.are.equal('', view.rows[2].cells[1].value)
+  end)
+
+  it('renders the BLOCKED special column as empty when NOBLOCKING is set', function()
+    local view = create_view({
+      '* TODO Parent',
+      ':PROPERTIES:',
+      ':NOBLOCKING: t',
+      ':COLUMNS: %20BLOCKED',
+      ':END:',
+      '** TODO Child',
+    })
+
+    assert.are.equal('', view.rows[1].cells[1].value)
   end)
 
   it('toggles checkbox cell values in both directions', function()
@@ -250,6 +358,143 @@ describe('ColumnView', function()
     assert.are.equal(9, view.rows[1].cells[1].column.width)
   end)
 
+  it('edits the current column attributes', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %10Owner',
+      ':END:',
+      '** Child',
+      ':PROPERTIES:',
+      ':Owner: Alice',
+      ':END:',
+    })
+
+    view.current_row = 1
+    view.current_col = 1
+
+    local original_input = vim.fn.input
+    local responses = { 'Status', 'Status?', '12', '+' }
+    local idx = 0
+    vim.fn.input = function()
+      idx = idx + 1
+      return responses[idx]
+    end
+    view:edit_attributes()
+    vim.fn.input = original_input
+
+    assert.are.equal('STATUS', view.columns[1].name)
+    assert.are.equal('Status?', view.columns[1].title)
+    assert.are.equal(12, view.columns[1].width)
+    assert.are.equal('+', view.columns[1].summary_type)
+    assert.is_false(view.columns[1].is_special)
+  end)
+
+  it('marks a renamed column as special', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %10Owner',
+      ':END:',
+    })
+
+    view.current_row = 1
+    view.current_col = 1
+
+    local original_input = vim.fn.input
+    local responses = { 'CLOCKSUM', 'CLOCKSUM', '', '' }
+    local idx = 0
+    vim.fn.input = function()
+      idx = idx + 1
+      return responses[idx]
+    end
+    view:edit_attributes()
+    vim.fn.input = original_input
+
+    assert.are.equal('CLOCKSUM', view.columns[1].name)
+    assert.is_true(view.columns[1].is_special)
+  end)
+
+  it('moves the current row down among its siblings', function()
+    local view, file = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %25ITEM',
+      ':END:',
+      '** Child 1',
+      '** Child 2',
+    })
+
+    view.current_row = 2
+    view.current_col = 1
+    view:move_row_down()
+
+    local lines = vim.api.nvim_buf_get_lines(file:bufnr(), 4, 6, false)
+    assert.are.same({ '** Child 2', '** Child 1' }, lines)
+    assert.are.equal('Child 2', view.rows[2].headline:get_title())
+    assert.are.equal('Child 1', view.rows[3].headline:get_title())
+    assert.are.equal(3, view.current_row)
+  end)
+
+  it('moves the current row up among its siblings', function()
+    local view, file = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %25ITEM',
+      ':END:',
+      '** Child 1',
+      '** Child 2',
+    })
+
+    view.current_row = 3
+    view.current_col = 1
+    view:move_row_up()
+
+    local lines = vim.api.nvim_buf_get_lines(file:bufnr(), 4, 6, false)
+    assert.are.same({ '** Child 2', '** Child 1' }, lines)
+    assert.are.equal('Child 2', view.rows[2].headline:get_title())
+    assert.are.equal(2, view.current_row)
+  end)
+
+  it('does not move a row past the superior level', function()
+    local view, file = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %25ITEM',
+      ':END:',
+      '** Child 1',
+      '** Child 2',
+    })
+
+    view.current_row = 2
+    view.current_col = 1
+    view:move_row_up()
+
+    local lines = vim.api.nvim_buf_get_lines(file:bufnr(), 4, 6, false)
+    assert.are.same({ '** Child 1', '** Child 2' }, lines)
+    assert.are.equal(2, view.current_row)
+  end)
+
+  it('refreshes the view from the current file state', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %10Owner',
+      ':END:',
+      '** Child',
+      ':PROPERTIES:',
+      ':Owner: Alice',
+      ':END:',
+    })
+
+    assert.are.equal('Alice', view.rows[2].cells[1].value)
+
+    view.rows[2].headline:set_property('owner', 'Bob')
+    view:refresh()
+
+    assert.are.equal('Bob', view.rows[2].cells[1].value)
+  end)
+
   it('renders a time summary for the ":" summary type', function()
     local view = create_view({
       '* Parent',
@@ -380,6 +625,10 @@ describe('ColumnView', function()
     assert.are.equal('<M-Right>', maps.move_column_right.default_map)
     assert.are.equal('<S-M-Left>', maps.delete_column.default_map)
     assert.are.equal('<S-M-Right>', maps.insert_column.default_map)
+    assert.are.equal('<M-Up>', maps.move_row_up.default_map)
+    assert.are.equal('<M-Down>', maps.move_row_down.default_map)
+    assert.are.equal('s', maps.edit_attributes.default_map)
+    assert.are.equal('r', maps.refresh.default_map)
     assert.are.equal('g?', maps.show_help.default_map)
     assert.are.same({ '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' }, maps.select_value.default_map)
   end)

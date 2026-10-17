@@ -6,11 +6,17 @@ local Summary = {}
 local SUMMARY_TYPES = {
   ['+'] = 'sum',
   [':'] = 'sum_time',
+  [':min'] = 'min_time',
+  [':max'] = 'max_time',
+  [':mean'] = 'mean_time',
   ['min'] = 'min',
   ['max'] = 'max',
   ['mean'] = 'mean',
   ['X'] = 'checkbox_all',
   ['X/'] = 'checkbox_fraction',
+  ['X%'] = 'checkbox_percent',
+  ['@min'] = 'min_age',
+  ['@max'] = 'max_age',
   ['@mean'] = 'age_mean',
   ['est+'] = 'estimate_sum',
 }
@@ -43,6 +49,12 @@ function Summary.compute(values, summary_type)
     return Summary._sum(values)
   elseif func == 'sum_time' then
     return Summary._sum_time(values)
+  elseif func == 'min_time' then
+    return Summary._extreme_time(values, 'min')
+  elseif func == 'max_time' then
+    return Summary._extreme_time(values, 'max')
+  elseif func == 'mean_time' then
+    return Summary._mean_time(values)
   elseif func == 'sum_format' then
     local format = summary_type:match('^%+;(.+)$') or '%.2f'
     return Summary._sum_format(values, format)
@@ -56,6 +68,12 @@ function Summary.compute(values, summary_type)
     return Summary._checkbox_all(values)
   elseif func == 'checkbox_fraction' then
     return Summary._checkbox_fraction(values)
+  elseif func == 'checkbox_percent' then
+    return Summary._checkbox_percent(values)
+  elseif func == 'min_age' then
+    return Summary._extreme_age(values, 'min')
+  elseif func == 'max_age' then
+    return Summary._extreme_age(values, 'max')
   elseif func == 'age_mean' then
     return Summary._age_mean(values)
   elseif func == 'estimate_sum' then
@@ -112,6 +130,38 @@ function Summary._sum_time(values)
     return nil
   end
   return Duration.from_minutes(total):to_string('HH:MM')
+end
+
+function Summary._extreme_time(values, mode)
+  local result = nil
+  for _, v in ipairs(values) do
+    local num = Summary._to_number(v)
+    if num then
+      if not result or (mode == 'min' and num < result) or (mode == 'max' and num > result) then
+        result = num
+      end
+    end
+  end
+  if not result then
+    return nil
+  end
+  return Duration.from_minutes(result):to_string('HH:MM')
+end
+
+function Summary._mean_time(values)
+  local total = 0
+  local count = 0
+  for _, v in ipairs(values) do
+    local num = Summary._to_number(v)
+    if num then
+      total = total + num
+      count = count + 1
+    end
+  end
+  if count == 0 then
+    return nil
+  end
+  return Duration.from_minutes(math.floor(total / count)):to_string('HH:MM')
 end
 
 function Summary._sum_format(values, format)
@@ -173,13 +223,41 @@ function Summary._mean(values)
 end
 
 function Summary._checkbox_all(values)
+  local done = 0
+  local total = 0
   for _, v in ipairs(values) do
     local checkbox = v:match('%[(.)%]')
-    if checkbox and checkbox:upper() ~= 'X' then
-      return '[ ]'
+    if checkbox then
+      total = total + 1
+      if checkbox:upper() == 'X' then
+        done = done + 1
+      end
     end
   end
-  return '[X]'
+  if done == total then
+    return '[X]'
+  elseif done > 0 then
+    return '[-]'
+  end
+  return '[ ]'
+end
+
+function Summary._checkbox_percent(values)
+  local done = 0
+  local total = 0
+  for _, v in ipairs(values) do
+    local checkbox = v:match('%[(.)%]')
+    if checkbox then
+      total = total + 1
+      if checkbox:upper() == 'X' then
+        done = done + 1
+      end
+    end
+  end
+  if total == 0 then
+    return nil
+  end
+  return string.format('[%d%%]', math.floor(100 * done / total + 0.5))
 end
 
 function Summary._checkbox_fraction(values)
@@ -198,6 +276,26 @@ function Summary._checkbox_fraction(values)
     return nil
   end
   return string.format('[%d/%d]', checked, total)
+end
+
+---Minimum or maximum age of the given age/duration values, formatted as a duration.
+---@param values string[]
+---@param mode 'min'|'max'
+---@return string|nil
+function Summary._extreme_age(values, mode)
+  local result = nil
+  for _, v in ipairs(values) do
+    local num = Summary._to_number(v)
+    if num then
+      if not result or (mode == 'min' and num < result) or (mode == 'max' and num > result) then
+        result = num
+      end
+    end
+  end
+  if not result then
+    return nil
+  end
+  return Duration.from_minutes(result):to_string()
 end
 
 ---Mean age of the given age/duration values, formatted as a duration.

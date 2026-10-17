@@ -2,7 +2,9 @@ local utils = require('orgmode.utils')
 local config = require('orgmode.config')
 local Summary = require('orgmode.columns.summary')
 local Cells = require('orgmode.columns.cells')
+local Parser = require('orgmode.columns.parser')
 local Input = require('orgmode.ui.input')
+local Headline = require('orgmode.files.headline')
 
 ---Normalize a mapping definition (a single key or a list of keys) to a list.
 ---@param mapping string|string[]|nil
@@ -24,15 +26,19 @@ ColumnView.__index = ColumnView
 ---@return OrgColumnView
 function ColumnView:new(opts)
   local ns = vim.api.nvim_create_namespace('orgmode_column_view')
+  local track_ns = vim.api.nvim_create_namespace('orgmode_column_view_track')
   local data = {
     files = opts.files,
     headlines = opts.headlines or {},
+    file = opts.headlines and opts.headlines[1] and opts.headlines[1].file or nil,
+    subtree = opts.subtree or false,
     columns = opts.columns_def.columns or {},
     allowed_values = opts.columns_def.allowed_values or {},
     rows = {},
     bufnr = opts.bufnr or 0,
     winid = opts.winid or 0,
     ns = ns,
+    track_ns = track_ns,
     cells = Cells:new(),
     current_row = 1,
     current_col = 1,
@@ -45,7 +51,23 @@ function ColumnView:new(opts)
   local this = setmetatable(data, ColumnView)
   this:_build_rows()
   this:_resolve_allowed_values()
+  this:_track_view_root()
   return this
+end
+
+---Place an extmark at the first line of the viewed subtree so that the view
+---root can be recovered after the buffer is reordered by move-row. It follows
+---the moved text, which keeps the column view anchored to the same subtree.
+---@private
+function ColumnView:_track_view_root()
+  if not self.subtree or #self.headlines == 0 then
+    return
+  end
+  if not vim.api.nvim_buf_is_valid(self.bufnr) then
+    return
+  end
+  local line = self.headlines[1]:get_range().start_line - 1
+  self._root_extmark_id = vim.api.nvim_buf_set_extmark(self.bufnr, self.track_ns, line, 0, {})
 end
 
 ---@private
@@ -435,6 +457,91 @@ function ColumnView:move_down()
       return
     end
   end
+end
+
+---Re-derive the viewed headlines from the (possibly reordered) buffer. The
+---subtree root is recovered from its tracking extmark; a whole-file view uses
+---the file's top level headlines.
+---@private
+function ColumnView:_reload_headlines()
+  if not self.file then
+    return
+  end
+  self.file:parse()
+  if self.subtree and self._root_extmark_id then
+    local mark = vim.api.nvim_buf_get_extmark_by_id(self.bufnr, self.track_ns, self._root_extmark_id, {})
+    if mark and mark[1] then
+      local node = self.file:closest_headline_node({ mark[1] + 1, mark[2] })
+      if node then
+        self.headlines = { Headline:new(node, self.file) }
+        return
+      end
+    end
+  end
+  self.headlines = self.file:get_top_level_headlines()
+end
+
+---Move the current row's subtree up or down among its siblings, like Emacs'
+---`org-columns-move-row-up`/`-down`. Reorders the underlying org buffer.
+---@param direction integer -1 to move up, 1 to move down
+---@private
+function ColumnView:_move_row(direction)
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+  local headline = row.headline
+  local sibling = direction < 0 and headline:get_prev_headline_same_level() or headline:get_next_headline_same_level()
+  if not sibling then
+    return utils.echo_warning('Cannot move past superior level.')
+  end
+
+  local range = headline:get_range()
+  local target_line = direction < 0 and sibling:get_range().start_line - 1 or sibling:get_range().end_line
+
+  local mark_id = vim.api.nvim_buf_set_extmark(self.bufnr, self.track_ns, range.start_line - 1, 0, {})
+  -- `:move` silently does nothing when part of the range is inside a closed
+  -- fold, so open folds for the duration of the move and restore them after.
+  local win = self.winid
+  local restore_foldenable = nil
+  if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == self.bufnr then
+    restore_foldenable = vim.wo[win].foldenable
+    vim.wo[win].foldenable = false
+  end
+  self:_write(function()
+    vim.api.nvim_buf_call(self.bufnr, function()
+      vim.cmd(string.format(':%d,%dmove %d', range.start_line, range.end_line, target_line))
+    end)
+  end)
+  if restore_foldenable ~= nil and vim.api.nvim_win_is_valid(win) then
+    vim.wo[win].foldenable = restore_foldenable
+  end
+
+  self:_reload_headlines()
+  self:_rebuild_rows()
+  self:_render()
+
+  local mark = vim.api.nvim_buf_get_extmark_by_id(self.bufnr, self.track_ns, mark_id, {})
+  if mark and mark[1] then
+    for idx, r in ipairs(self.rows) do
+      if r.headline:get_range().start_line - 1 == mark[1] then
+        self.current_row = idx
+        if vim.api.nvim_win_is_valid(self.winid) and vim.api.nvim_win_get_buf(self.winid) == self.bufnr then
+          vim.api.nvim_win_set_cursor(self.winid, { r.headline:get_range().start_line, 0 })
+        end
+        break
+      end
+    end
+  end
+  vim.api.nvim_buf_del_extmark(self.bufnr, self.track_ns, mark_id)
+end
+
+function ColumnView:move_row_up()
+  self:_move_row(-1)
+end
+
+function ColumnView:move_row_down()
+  self:_move_row(1)
 end
 
 function ColumnView:next_value()
@@ -924,6 +1031,39 @@ function ColumnView:insert_column()
   }
 
   table.insert(self.columns, self.current_col, new_col)
+  self:_rebuild_rows()
+  self:_render()
+end
+
+---Edit the property, title, width and summary type of the current column.
+function ColumnView:edit_attributes()
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+  local cell = row.cells[self.current_col]
+  if not cell then
+    return
+  end
+  local col = cell.column
+
+  local name = vim.fn.input('Column name: ', col.name)
+  if not name or vim.trim(name) == '' then
+    return
+  end
+  name = vim.trim(name):upper()
+
+  local title = vim.trim(vim.fn.input('Column title: ', col.title or '') or '')
+  local width_input = vim.fn.input('Width (optional): ', col.width and tostring(col.width) or '') or ''
+  local summary = vim.trim(vim.fn.input('Summary type (optional): ', col.summary_type or '') or '')
+
+  col.name = name
+  col.title = title ~= '' and title or name
+  col.width = tonumber(width_input)
+  col.summary_type = summary ~= '' and summary or nil
+  col.is_special = Parser.is_special_column(name)
+
+  self._widths = nil
   self:_rebuild_rows()
   self:_render()
 end

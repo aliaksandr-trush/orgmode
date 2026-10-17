@@ -34,6 +34,8 @@ local COLUMN_ACTIONS = {
   delete_column = true,
   move_column_left = true,
   move_column_right = true,
+  edit_attributes = true,
+  refresh = true,
   show_help = true,
 }
 
@@ -1032,6 +1034,41 @@ function OrgAgendaColumnsType:move_column_right()
     self._widths = nil
     self:render(self.bufnr)
   end
+end
+
+---Edit the property, title, width and summary type of the current column.
+function OrgAgendaColumnsType:edit_attributes()
+  local col = self:_current_column()
+  if not col then
+    return
+  end
+
+  local name = vim.fn.input('Column name: ', col.name)
+  if not name or vim.trim(name) == '' then
+    return
+  end
+  name = vim.trim(name):upper()
+
+  local title = vim.trim(vim.fn.input('Column title: ', col.title or '') or '')
+  local width_input = vim.fn.input('Width (optional): ', col.width and tostring(col.width) or '') or ''
+  local summary = vim.trim(vim.fn.input('Summary type (optional): ', col.summary_type or '') or '')
+
+  col.name = name
+  col.title = title ~= '' and title or name
+  col.width = tonumber(width_input)
+  col.summary_type = summary ~= '' and summary or nil
+  col.is_special = Parser.is_special_column(name)
+
+  self._columns_dirty = true
+  self._widths = nil
+  self:render(self.bufnr)
+end
+
+---Recompute the column display from the current file state.
+function OrgAgendaColumnsType:refresh()
+  self.cells:clear_cache()
+  self._widths = nil
+  self:render(self.bufnr)
 end
 
 function OrgAgendaColumnsType:show_help()

@@ -26,7 +26,15 @@ local COLUMN_ACTIONS = {
   select_value = true,
   view_value = true,
   edit_value = true,
+  edit_allowed = true,
   toggle_or_quit = true,
+  narrow_column = true,
+  widen_column = true,
+  insert_column = true,
+  delete_column = true,
+  move_column_left = true,
+  move_column_right = true,
+  show_help = true,
 }
 
 ---Normalize a mapping definition (a single key or a list of keys) to a list.
@@ -40,6 +48,61 @@ local function mapping_keys(mapping)
     return mapping
   end
   return {}
+end
+
+---Resolve the buffer-local keys a column view action would bind.
+---@param map table
+---@return string[]
+local function action_keys(map)
+  local mapping = map.user_map ~= nil and map.user_map or map.default_map
+  local keys = mapping_keys(mapping)
+  local prefix = map.opts and map.opts.prefix
+  if not prefix then
+    return keys
+  end
+  local out = {}
+  for _, key in ipairs(keys) do
+    table.insert(out, (key:gsub('<prefix>', prefix)))
+  end
+  return out
+end
+
+---Pre-existing buffer-local mappings overridden by the column view, keyed by
+---buffer. Used to restore them (e.g. the agenda `g?` help mapping) on teardown.
+local overridden_maps = {}
+
+---@param bufnr number
+---@param keys string[]
+---@return table<string, table>
+local function snapshot_keymaps(bufnr, keys)
+  local snapshot = {}
+  local existing = vim.api.nvim_buf_get_keymap(bufnr, 'n')
+  for _, key in ipairs(keys) do
+    for _, entry in ipairs(existing) do
+      if entry.lhs == key then
+        snapshot[key] = entry
+        break
+      end
+    end
+  end
+  return snapshot
+end
+
+---@param bufnr number
+---@param snapshot table<string, table>
+local function restore_keymaps(bufnr, snapshot)
+  for key, entry in pairs(snapshot) do
+    local opts = {
+      buffer = bufnr,
+      noremap = entry.noremap == 1,
+      silent = entry.silent == 1,
+      expr = entry.expr == 1,
+      nowait = entry.nowait == 1,
+      replace_keycodes = entry.replace_keycodes == 1,
+      desc = entry.desc,
+    }
+    pcall(vim.keymap.set, 'n', key, entry.callback or entry.rhs, opts)
+  end
 end
 
 ---@class OrgAgendaColumnsTypeOpts
@@ -77,6 +140,8 @@ end
 ---@field allowed_values table<string, string[]>
 ---@field headlines OrgHeadline[]
 ---@field _widths? number[]
+---@field _base_format? string
+---@field _columns_dirty? boolean
 ---@field current_row number
 ---@field current_col number
 ---@field bufnr? number
@@ -105,6 +170,8 @@ function OrgAgendaColumnsType:new(opts)
     columns = {},
     allowed_values = {},
     headlines = {},
+    _base_format = nil,
+    _columns_dirty = false,
     current_row = 1,
     current_col = 1,
     bufnr = nil,
@@ -132,13 +199,20 @@ end
 function OrgAgendaColumnsType:_setup()
   self:_collect_headlines()
   local format = self:_resolve_format()
-  if format then
-    local columns_def = Parser.parse(format)
-    self.columns = columns_def and columns_def.columns or {}
-    self.allowed_values = columns_def and columns_def.allowed_values or {}
-  else
-    self.columns = {}
-    self.allowed_values = {}
+  -- Preserve in-memory column edits (width, insert, delete, reorder) while the
+  -- resolved format is unchanged. A new format (config or directive change)
+  -- re-parses and discards the local edits.
+  if format ~= self._base_format or not self._columns_dirty then
+    self._base_format = format
+    self._columns_dirty = false
+    if format then
+      local columns_def = Parser.parse(format)
+      self.columns = columns_def and columns_def.columns or {}
+      self.allowed_values = columns_def and columns_def.allowed_values or {}
+    else
+      self.columns = {}
+      self.allowed_values = {}
+    end
   end
   self:_resolve_allowed_values()
 end
@@ -260,6 +334,22 @@ end
 ---@param bufnr? number
 function OrgAgendaColumnsType:render(bufnr)
   self.bufnr = bufnr or 0
+  -- The agenda buffer is intentionally `nomodifiable`, but rendering writes the
+  -- cell lines back. Temporarily unlock it so on-the-fly column edits (width,
+  -- insert, delete, reorder) can re-render, then restore the previous state.
+  local modifiable = vim.bo[self.bufnr].modifiable
+  vim.bo[self.bufnr].modifiable = true
+  local ok, result = pcall(self._render, self)
+  if vim.api.nvim_buf_is_valid(self.bufnr) then
+    vim.bo[self.bufnr].modifiable = modifiable
+  end
+  if not ok then
+    error(result)
+  end
+  return result
+end
+
+function OrgAgendaColumnsType:_render()
   self:_setup()
   self.cells:clear_cache()
   local agendaView = AgendaView:new({ bufnr = self.bufnr, highlighter = self.highlighter })
@@ -805,6 +895,149 @@ function OrgAgendaColumnsType:edit_value()
   end
 end
 
+---Edit the allowed values of the current column (`a`). Mirrors the file column
+---view: the list is stored on the entry that already defines it, otherwise on
+---the first entry of the view.
+function OrgAgendaColumnsType:edit_allowed()
+  local headline = self:_current_headline()
+  local col = self:_current_column()
+  if not headline or not col then
+    return
+  end
+  if col.is_special then
+    -- TODO, PRIORITY, TAGS, ... derive their values from configuration or the
+    -- files, not from a `<NAME>_ALL` property (Org itself does not support this).
+    utils.echo_info(("Cannot edit allowed values for the special '%s' column"):format(col.name))
+    return
+  end
+
+  local prop_name = col.name .. '_ALL'
+  local prop_key = prop_name:lower()
+
+  local target = self.headlines[1] or headline
+  local current = headline
+  while current do
+    local own = current:get_own_properties()
+    if own and own[prop_key] then
+      target = current
+      break
+    end
+    current = current:get_parent_headline()
+  end
+
+  local current_allowed = vim.deepcopy(self.allowed_values[prop_name] or {})
+  if #current_allowed == 0 then
+    local seen = {}
+    for _, h in ipairs(self.headlines) do
+      local val = self:_cell_value(h, col)
+      if val and val ~= '' and not seen[val] then
+        seen[val] = true
+        table.insert(current_allowed, val)
+      end
+    end
+  end
+
+  local input = vim.fn.input('Allowed values (comma separated): ', table.concat(current_allowed, ','))
+  if not input or vim.trim(input) == '' then
+    return
+  end
+
+  local new_allowed = vim.split(input, ',', { trimempty = true })
+  for i, v in ipairs(new_allowed) do
+    new_allowed[i] = vim.trim(v)
+  end
+
+  self:_apply_value(target, { name = prop_name, is_special = false }, table.concat(new_allowed, ','))
+  utils.echo_info(('Allowed values for %s: %s'):format(col.name, table.concat(new_allowed, ', ')))
+end
+
+function OrgAgendaColumnsType:narrow_column()
+  local col = self:_current_column()
+  if not col then
+    return
+  end
+  local width = col.width or (self._widths and self._widths[self.current_col]) or 10
+  if width > 5 then
+    col.width = width - 1
+    self._columns_dirty = true
+    self._widths = nil
+    self:render(self.bufnr)
+  end
+end
+
+function OrgAgendaColumnsType:widen_column()
+  local col = self:_current_column()
+  if not col then
+    return
+  end
+  local width = col.width or (self._widths and self._widths[self.current_col]) or 10
+  col.width = math.min(width + 1, 50)
+  self._columns_dirty = true
+  self._widths = nil
+  self:render(self.bufnr)
+end
+
+function OrgAgendaColumnsType:insert_column()
+  local name = vim.fn.input('Column name: ')
+  if not name or vim.trim(name) == '' then
+    return
+  end
+
+  local width = tonumber(vim.fn.input('Width (optional): '))
+
+  local new_col = {
+    name = name:upper(),
+    width = width,
+    title = name,
+    summary_type = nil,
+    is_special = false,
+  }
+
+  table.insert(self.columns, self.current_col, new_col)
+  self._columns_dirty = true
+  self._widths = nil
+  self:render(self.bufnr)
+end
+
+function OrgAgendaColumnsType:delete_column()
+  if #self.columns <= 1 then
+    return
+  end
+  table.remove(self.columns, self.current_col)
+  if self.current_col > #self.columns then
+    self.current_col = #self.columns
+  end
+  self._columns_dirty = true
+  self._widths = nil
+  self:render(self.bufnr)
+end
+
+function OrgAgendaColumnsType:move_column_left()
+  if self.current_col > 1 then
+    local col = table.remove(self.columns, self.current_col)
+    table.insert(self.columns, self.current_col - 1, col)
+    self.current_col = self.current_col - 1
+    self._columns_dirty = true
+    self._widths = nil
+    self:render(self.bufnr)
+  end
+end
+
+function OrgAgendaColumnsType:move_column_right()
+  if self.current_col < #self.columns then
+    local col = table.remove(self.columns, self.current_col)
+    table.insert(self.columns, self.current_col + 1, col)
+    self.current_col = self.current_col + 1
+    self._columns_dirty = true
+    self._widths = nil
+    self:render(self.bufnr)
+  end
+end
+
+function OrgAgendaColumnsType:show_help()
+  require('orgmode.objects.help').show('column_view')
+end
+
 -- ---------------------------------------------------------------------------
 -- Mappings
 -- ---------------------------------------------------------------------------
@@ -816,6 +1049,15 @@ function OrgAgendaColumnsType:_setup_mappings()
   local maps = config:get_mappings('column_view', self.bufnr)
   if not maps then
     return
+  end
+  if not overridden_maps[self.bufnr] then
+    local keys = {}
+    for name, map in pairs(maps) do
+      if COLUMN_ACTIONS[name] then
+        vim.list_extend(keys, action_keys(map))
+      end
+    end
+    overridden_maps[self.bufnr] = snapshot_keymaps(self.bufnr, keys)
   end
   for name, map in pairs(maps) do
     if COLUMN_ACTIONS[name] and map.map_entry then
@@ -870,14 +1112,19 @@ function OrgAgendaColumnsType.clear_mappings(bufnr)
   if not maps then
     return
   end
+  local keys = {}
   for name, map in pairs(maps) do
-    if COLUMN_ACTIONS[name] and map.map_entry then
-      for _, keys in ipairs({ mapping_keys(map.default_map), mapping_keys(map.user_map) }) do
-        for _, key in ipairs(keys) do
-          pcall(vim.keymap.del, 'n', key, { buffer = bufnr })
-        end
-      end
+    if COLUMN_ACTIONS[name] then
+      vim.list_extend(keys, action_keys(map))
     end
+  end
+  for _, key in ipairs(keys) do
+    pcall(vim.keymap.del, 'n', key, { buffer = bufnr })
+  end
+  local snapshot = overridden_maps[bufnr]
+  overridden_maps[bufnr] = nil
+  if snapshot then
+    restore_keymaps(bufnr, snapshot)
   end
 end
 

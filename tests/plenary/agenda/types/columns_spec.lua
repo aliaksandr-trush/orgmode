@@ -303,6 +303,170 @@ describe('Agenda Columns Type', function()
     assert.are.equal('[ ]', view.headlines[headline_index(view, 'Check Probe')]:get_property('status'))
   end)
 
+  it('edits allowed values with edit_allowed', function()
+    local view = build_view({
+      '* Curator Parent',
+      ':PROPERTIES:',
+      ':Curator_ALL: Alice,Bob',
+      ':Curator: Alice',
+      ':END:',
+    }, {
+      overriding_columns_format = '%25ITEM %Curator{Curator_ALL}',
+    })
+    view.current_row = headline_index(view, 'Curator Parent')
+    view.current_col = column_index(view, 'Curator')
+
+    local original_input = vim.fn.input
+    vim.fn.input = function()
+      return 'Alice,Carol'
+    end
+    view:edit_allowed()
+    vim.fn.input = original_input
+
+    local updated = view.headlines[headline_index(view, 'Curator Parent')]
+    assert.are.equal('Alice,Carol', updated:get_own_properties()['curator_all'])
+    assert.are.same({ 'Alice', 'Carol' }, view.allowed_values['CURATOR_ALL'])
+  end)
+
+  it('refuses to edit allowed values for special columns', function()
+    local view = build_view({ '* TODO Special Probe' }, { overriding_columns_format = '%25ITEM %TODO' })
+    view.current_row = headline_index(view, 'Special Probe')
+    view.current_col = column_index(view, 'TODO')
+
+    local utils = require('orgmode.utils')
+    local original_echo = utils.echo_info
+    local messages = {}
+    utils.echo_info = function(msg)
+      table.insert(messages, msg)
+    end
+    local original_input = vim.fn.input
+    vim.fn.input = function()
+      error('input must not be called for special columns')
+    end
+    local ok, err = pcall(function()
+      view:edit_allowed()
+    end)
+    vim.fn.input = original_input
+    utils.echo_info = original_echo
+
+    assert.is_true(ok, err)
+    assert.is_truthy(messages[1] and messages[1]:find('TODO', 1, true))
+    local updated = view.headlines[headline_index(view, 'Special Probe')]
+    assert.is_nil(updated:get_own_properties()['todo_all'])
+  end)
+
+  it('changes columns while the agenda buffer is not modifiable', function()
+    local view = build_view({ '* Mod Probe' }, { overriding_columns_format = '%10ITEM %TODO' })
+    vim.bo[view.bufnr].modifiable = false
+    view.current_row = 1
+    view.current_col = column_index(view, 'ITEM')
+
+    assert.has_no.errors(function()
+      view:narrow_column()
+      view:widen_column()
+      view:move_column_left()
+      view:move_column_right()
+      view:delete_column()
+    end)
+
+    assert.is_false(vim.bo[view.bufnr].modifiable)
+  end)
+
+  it('inserts a column while the agenda buffer is not modifiable', function()
+    local view = build_view({ '* Mod Insert Probe' }, { overriding_columns_format = '%10ITEM %TODO' })
+    vim.bo[view.bufnr].modifiable = false
+    view.current_row = 1
+    view.current_col = column_index(view, 'TODO')
+
+    local original_input = vim.fn.input
+    local responses = { 'Owner', '' }
+    local idx = 0
+    vim.fn.input = function()
+      idx = idx + 1
+      return responses[idx]
+    end
+    assert.has_no.errors(function()
+      view:insert_column()
+    end)
+    vim.fn.input = original_input
+
+    assert.is_not_nil(column_index(view, 'OWNER'))
+    assert.is_false(vim.bo[view.bufnr].modifiable)
+  end)
+
+  it('narrows and widens the current column', function()
+    local view = build_view({ '* Width Probe' }, { overriding_columns_format = '%10ITEM %8TODO' })
+    view.current_row = 1
+    view.current_col = column_index(view, 'ITEM')
+
+    view:narrow_column()
+    assert.are.equal(9, view.columns[view.current_col].width)
+    view:widen_column()
+    assert.are.equal(10, view.columns[view.current_col].width)
+  end)
+
+  it('inserts a column before the current one and keeps it across renders', function()
+    local view = build_view({ '* Insert Probe' }, { overriding_columns_format = '%10ITEM %TODO' })
+    view.current_row = 1
+    view.current_col = column_index(view, 'TODO')
+
+    local original_input = vim.fn.input
+    local responses = { 'Owner', '12' }
+    local idx = 0
+    vim.fn.input = function()
+      idx = idx + 1
+      return responses[idx]
+    end
+    view:insert_column()
+    vim.fn.input = original_input
+
+    assert.are.equal('OWNER', view.columns[view.current_col].name)
+    assert.are.equal(12, view.columns[column_index(view, 'OWNER')].width)
+
+    view:render(view.bufnr)
+    assert.is_not_nil(column_index(view, 'OWNER'))
+  end)
+
+  it('deletes the current column', function()
+    local view = build_view({ '* Delete Probe' }, { overriding_columns_format = '%10ITEM %TODO' })
+    view.current_row = 1
+    view.current_col = column_index(view, 'TODO')
+
+    view:delete_column()
+
+    assert.is_nil(column_index(view, 'TODO'))
+    assert.is_not_nil(column_index(view, 'ITEM'))
+  end)
+
+  it('moves the current column left and right', function()
+    local view = build_view({ '* Move Probe' }, { overriding_columns_format = '%10ITEM %TODO' })
+    view.current_row = 1
+    local todo_col = column_index(view, 'TODO')
+    view.current_col = todo_col
+
+    view:move_column_left()
+    assert.are.equal(todo_col - 1, column_index(view, 'TODO'))
+    assert.are.equal(todo_col - 1, view.current_col)
+
+    view:move_column_right()
+    assert.are.equal(todo_col, column_index(view, 'TODO'))
+    assert.are.equal(todo_col, view.current_col)
+  end)
+
+  it('shows the column view help', function()
+    local view = build_view({ '* Help Probe' }, { overriding_columns_format = '%ITEM' })
+    local Help = require('orgmode.objects.help')
+    local original = Help.show
+    local shown
+    Help.show = function(name)
+      shown = name
+    end
+    view:show_help()
+    Help.show = original
+
+    assert.are.equal('column_view', shown)
+  end)
+
   it('highlights the current cell', function()
     local view = build_view({ '* Hl Probe' }, { overriding_columns_format = '%10ITEM %8TODO' })
     local win = vim.api.nvim_open_win(view.bufnr, true, {
@@ -341,11 +505,45 @@ describe('Agenda Columns Type', function()
     assert.is_true(keys['h'] and keys['l'] and keys['j'] and keys['k'])
     assert.is_true(keys['n'] and keys['p'] and keys['e'] and keys['v'])
     assert.is_true(keys['1'] and keys['0'])
+    assert.is_true(keys['a'] and keys['<lt>'] and keys['>'] and keys['g?'])
+    assert.is_true(keys['<M-S-Right>'] and keys['<M-S-Left>'])
+    assert.is_true(keys['<M-Left>'] and keys['<M-Right>'])
 
     OrgAgendaColumnsType.clear_mappings(bufnr)
     keys = lhs_set()
     assert.is_nil(keys['h'])
     assert.is_nil(keys['n'])
     assert.is_nil(keys['1'])
+    assert.is_nil(keys['a'])
+    assert.is_nil(keys['<lt>'])
+    assert.is_nil(keys['g?'])
+  end)
+
+  it('restores pre-existing buffer local mappings on clear', function()
+    local view = build_view({ '* Restore Probe' }, { overriding_columns_format = '%ITEM %TODO' })
+    local bufnr = view.bufnr
+    local calls = 0
+    -- Mirror Agenda:render: clear first, then register the agenda mapping so
+    -- the column view snapshots and later restores it.
+    OrgAgendaColumnsType.clear_mappings(bufnr)
+    vim.keymap.set('n', 'g?', function()
+      calls = calls + 1
+    end, { buffer = bufnr, desc = 'agenda help' })
+
+    view:render(bufnr)
+    OrgAgendaColumnsType.clear_mappings(bufnr)
+
+    local restored
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, 'n')) do
+      if m.lhs == 'g?' then
+        restored = m
+        break
+      end
+    end
+    assert.is_not_nil(restored)
+    assert.are.equal('agenda help', restored.desc)
+
+    restored.callback()
+    assert.are.equal(1, calls)
   end)
 end)

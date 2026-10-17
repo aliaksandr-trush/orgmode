@@ -199,6 +199,38 @@ describe('ColumnView', function()
     assert.is_nil(view.rows[2].headline:get_own_properties()['status_all'])
   end)
 
+  it('refuses to edit allowed values for special columns', function()
+    local view = create_view({
+      '* TODO Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %25ITEM %TODO',
+      ':END:',
+    })
+
+    view.current_row = 1
+    view.current_col = 2
+
+    local utils = require('orgmode.utils')
+    local original_echo = utils.echo_info
+    local messages = {}
+    utils.echo_info = function(msg)
+      table.insert(messages, msg)
+    end
+    local original_input = vim.fn.input
+    vim.fn.input = function()
+      error('input must not be called for special columns')
+    end
+    local ok, err = pcall(function()
+      view:edit_allowed()
+    end)
+    vim.fn.input = original_input
+    utils.echo_info = original_echo
+
+    assert.is_true(ok, err)
+    assert.is_truthy(messages[1] and messages[1]:find('TODO', 1, true))
+    assert.is_nil(view.rows[1].headline:get_own_properties()['todo_all'])
+  end)
+
   it('narrows columns that do not have an explicit width', function()
     local view = create_view({
       '* Parent',

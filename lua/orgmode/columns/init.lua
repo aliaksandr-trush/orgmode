@@ -665,6 +665,13 @@ function ColumnView:edit_allowed()
   end
 
   local col = cell.column
+  if col.is_special then
+    -- TODO, PRIORITY, TAGS, ... derive their values from configuration or the
+    -- files, not from a `<NAME>_ALL` property (Org itself does not support this).
+    utils.echo_info(("Cannot edit allowed values for the special '%s' column"):format(col.name))
+    return
+  end
+
   local prop_name = col.name .. '_ALL'
   local prop_key = prop_name:lower()
 
@@ -714,6 +721,7 @@ function ColumnView:edit_allowed()
   end)
 
   self:refresh()
+  utils.echo_info(('Allowed values for %s: %s'):format(col.name, table.concat(new_allowed, ', ')))
 end
 
 ---Edit the value at point using appropriate interface for the column type

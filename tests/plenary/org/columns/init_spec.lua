@@ -592,4 +592,34 @@ describe('ColumnView', function()
     view:quit()
     assert.is_true(vim.bo[bufnr].modifiable)
   end)
+
+  it('skips rows hidden by a closed fold when navigating', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM',
+      ':END:',
+      '** One',
+      '** Two',
+    })
+    assert.are.equal(3, #view.rows)
+
+    vim.api.nvim_set_current_buf(view.bufnr)
+    vim.cmd('setlocal foldmethod=manual')
+    vim.cmd('normal! zE')
+    vim.cmd('5,6fold')
+
+    -- The fold's first line (One) stays visible, its content (Two) does not.
+    assert.is_true(view:_is_row_visible(view.rows[2]))
+    assert.is_false(view:_is_row_visible(view.rows[3]))
+
+    view.current_row = 1
+    view:move_down()
+    assert.are.equal(2, view.current_row)
+    view:move_down()
+    assert.are.equal(2, view.current_row)
+
+    vim.cmd('normal! zE')
+    vim.cmd('setlocal foldmethod=expr')
+  end)
 end)

@@ -399,23 +399,41 @@ function ColumnView:move_right()
   end
 end
 
+---Whether the row's headline line is currently visible. A line is visible when
+---it is not in a closed fold, or when it is the first (displayed) line of one.
+---@param row OrgColumnViewRow
+---@return boolean
+function ColumnView:_is_row_visible(row)
+  local line = row.headline:get_range().start_line
+  local closed = vim.fn.foldclosed(line)
+  return closed == -1 or closed == line
+end
+
 function ColumnView:move_up()
-  if self.current_row > 1 then
-    self.current_row = self.current_row - 1
-    local row = self.rows[self.current_row]
-    local line = row.headline:get_range().start_line
-    vim.api.nvim_win_set_cursor(self.winid, { line, 0 })
-    self:_render()
+  local idx = self.current_row
+  while idx > 1 do
+    idx = idx - 1
+    if self:_is_row_visible(self.rows[idx]) then
+      self.current_row = idx
+      local line = self.rows[idx].headline:get_range().start_line
+      vim.api.nvim_win_set_cursor(self.winid, { line, 0 })
+      self:_render()
+      return
+    end
   end
 end
 
 function ColumnView:move_down()
-  if self.current_row < #self.rows then
-    self.current_row = self.current_row + 1
-    local row = self.rows[self.current_row]
-    local line = row.headline:get_range().start_line
-    vim.api.nvim_win_set_cursor(self.winid, { line, 0 })
-    self:_render()
+  local idx = self.current_row
+  while idx < #self.rows do
+    idx = idx + 1
+    if self:_is_row_visible(self.rows[idx]) then
+      self.current_row = idx
+      local line = self.rows[idx].headline:get_range().start_line
+      vim.api.nvim_win_set_cursor(self.winid, { line, 0 })
+      self:_render()
+      return
+    end
   end
 end
 

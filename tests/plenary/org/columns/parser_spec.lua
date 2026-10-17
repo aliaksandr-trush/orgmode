@@ -112,6 +112,20 @@ describe('Column Parser', function()
       assert.is_nil(result.columns[1].allowed_values, case[1] .. ' should not be allowed values')
     end
   end)
+
+  it('serializes columns back into a format string', function()
+    local columns = {
+      { name = 'ITEM', width = 25, title = 'ITEM' },
+      { name = 'EFFORT', width = 10, title = 'Effort', summary_type = ':' },
+      { name = 'OWNER', width = 12, title = 'Owner?', allowed_values = { 'Owner_ALL' } },
+    }
+    assert.are.equal('%25ITEM %10EFFORT{:} %12OWNER(Owner?){Owner_ALL}', Parser.unparse(columns))
+  end)
+
+  it('round trips a format string through parse and unparse', function()
+    local format = '%25ITEM %10EFFORT{:} %12OWNER(Owner?){Owner_ALL}'
+    assert.are.equal(format, Parser.unparse(Parser.parse(format).columns))
+  end)
 end)
 
 describe('Column Format Resolution', function()

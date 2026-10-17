@@ -415,6 +415,52 @@ describe('ColumnView', function()
     assert.is_true(view.columns[1].is_special)
   end)
 
+  it('persists column edits to the start headline COLUMNS property', function()
+    local view, file = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %10Owner{Owner_ALL}',
+      ':Owner_ALL: Alice, Bob',
+      ':END:',
+      '** Child',
+      ':PROPERTIES:',
+      ':Owner: Alice',
+      ':END:',
+    })
+
+    view.current_row = 1
+    view.current_col = 1
+    view:widen_column()
+
+    local headline = file:get_headlines()[1]
+    assert.are.equal('%11OWNER{Owner_ALL}', headline:get_property('COLUMNS', false))
+  end)
+
+  it('persists edited attributes to headline COLUMNS property', function()
+    local view, file = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %10Owner',
+      ':END:',
+    })
+
+    view.current_row = 1
+    view.current_col = 1
+
+    local original_input = vim.fn.input
+    local responses = { 'Status', '', '12', '+' }
+    local idx = 0
+    vim.fn.input = function()
+      idx = idx + 1
+      return responses[idx]
+    end
+    view:edit_attributes()
+    vim.fn.input = original_input
+
+    local headline = file:get_headlines()[1]
+    assert.are.equal('%12STATUS{+}', headline:get_property('COLUMNS', false))
+  end)
+
   it('moves the current row down among its siblings', function()
     local view, file = create_view({
       '* Parent',
@@ -737,6 +783,53 @@ describe('ColumnView', function()
 
     mappings:org_columns()
     assert.is_nil(mappings.column_view)
+  end)
+
+  it('persists whole-file edits to the file COLUMNS keyword', function()
+    local org = require('orgmode')
+    local file = helpers.create_file({
+      '#+COLUMNS: %10Item',
+      '',
+      '* First',
+      '* Second',
+    }, 'whole-file-persist.org')
+    file:reload_sync()
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+
+    local mappings = org.org_mappings
+    local view = mappings:org_columns()
+    view.current_row = 1
+    view.current_col = 1
+    view:widen_column()
+    mappings:org_columns()
+
+    assert.are.equal('#+COLUMNS: %11ITEM', vim.api.nvim_buf_get_lines(file:bufnr(), 0, 1, false)[1])
+  end)
+
+  it('inserts a file COLUMNS keyword when the start headline has none', function()
+    vim.bo.modified = false
+    local file = helpers.create_file({
+      '* Parent',
+      '** Child',
+      ':PROPERTIES:',
+      ':Owner: Alice',
+      ':END:',
+    }, 'insert-columns.org')
+    file:reload_sync()
+    local headline = file:get_headlines()[1]
+    local view = ColumnView:new({
+      files = require('orgmode').files,
+      headlines = { headline },
+      subtree = true,
+      columns_def = Parser.parse('%10Owner'),
+      bufnr = file:bufnr(),
+    })
+
+    view.current_row = 1
+    view.current_col = 1
+    view:widen_column()
+
+    assert.are.equal('#+COLUMNS: %11OWNER', vim.api.nvim_buf_get_lines(file:bufnr(), 0, 1, false)[1])
   end)
 
   it('selects a specific TODO keyword by number', function()

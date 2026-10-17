@@ -2155,6 +2155,12 @@ require('orgmode').setup({
 Display a spreadsheet-like view of properties overlaid on headlines (org buffer)
 or as a full-screen buffer (agenda).
 
+Editing the columns (changing attributes with =s=, resizing, inserting, deleting
+or moving) is written back to the buffer, like Emacs: into the =:COLUMNS:=
+property of the headline the view started at when it has one, otherwise into the
+first =#+COLUMNS:= keyword (created before the first headline if missing). The
+agenda column view is read-only and keeps such edits in memory only.
+
 **** org_columns_default_format
 :PROPERTIES:
 :CUSTOM_ID: org_columns_default_format

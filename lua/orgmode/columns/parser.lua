@@ -29,6 +29,34 @@ function Parser.is_special_column(name)
   return name ~= nil and SPECIAL_COLUMNS[name:upper()] == true
 end
 
+---Serialize parsed columns back into a column format string, mirroring Emacs'
+---`org-columns-uncompile-format`. The title is omitted when it matches the
+---property name, and allowed values are kept as a trailing brace so they
+---survive a round trip.
+---@param columns OrgColumnSpec[]
+---@return string
+function Parser.unparse(columns)
+  local specs = {}
+  for _, col in ipairs(columns) do
+    local spec = '%'
+    if col.width then
+      spec = spec .. tostring(col.width)
+    end
+    spec = spec .. col.name
+    if col.title and col.title:upper() ~= col.name:upper() then
+      spec = spec .. '(' .. col.title .. ')'
+    end
+    if col.summary_type then
+      spec = spec .. '{' .. col.summary_type .. '}'
+    end
+    if col.allowed_values and #col.allowed_values > 0 then
+      spec = spec .. '{' .. table.concat(col.allowed_values, ',') .. '}'
+    end
+    table.insert(specs, spec)
+  end
+  return table.concat(specs, ' ')
+end
+
 ---@param format_string string
 ---@return OrgColumnsDefinition
 function Parser.parse(format_string)

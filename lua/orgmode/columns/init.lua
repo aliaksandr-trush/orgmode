@@ -481,6 +481,35 @@ function ColumnView:_reload_headlines()
   self.headlines = self.file:get_top_level_headlines()
 end
 
+---Persist the current column format to the buffer, mirroring Emacs'
+---`org-columns-store-format`. A subtree view updates the start headline's
+---`:COLUMNS:` property when it already has one; otherwise the file's
+---`#+COLUMNS:` keyword is created or updated.
+---@private
+function ColumnView:_store_format()
+  if not self.file then
+    return
+  end
+  local format = Parser.unparse(self.columns)
+  self:_write(function()
+    if self.subtree and self.headlines[1] and self.headlines[1]:get_property('COLUMNS', false) then
+      self.headlines[1]:set_property('COLUMNS', format)
+      return
+    end
+    self.file:set_file_columns(format)
+  end)
+end
+
+---Persist the edited column format and rebuild the view from the updated
+---buffer, since editing the format can move the headline lines.
+---@private
+function ColumnView:_after_columns_changed()
+  self:_store_format()
+  self:_reload_headlines()
+  self:_rebuild_rows()
+  self:_render()
+end
+
 ---Move the current row's subtree up or down among its siblings, like Emacs'
 ---`org-columns-move-row-up`/`-down`. Reorders the underlying org buffer.
 ---@param direction integer -1 to move up, 1 to move down
@@ -991,7 +1020,7 @@ function ColumnView:narrow_column()
   if width > 5 then
     col.width = width - 1
     self._widths = nil
-    self:_render()
+    self:_after_columns_changed()
   end
 end
 
@@ -1009,7 +1038,7 @@ function ColumnView:widen_column()
   local width = col.width or self:_get_width(self.current_col)
   col.width = math.min(width + 1, 50)
   self._widths = nil
-  self:_render()
+  self:_after_columns_changed()
 end
 
 function ColumnView:insert_column()
@@ -1031,8 +1060,7 @@ function ColumnView:insert_column()
   }
 
   table.insert(self.columns, self.current_col, new_col)
-  self:_rebuild_rows()
-  self:_render()
+  self:_after_columns_changed()
 end
 
 ---Edit the property, title, width and summary type of the current column.
@@ -1064,8 +1092,7 @@ function ColumnView:edit_attributes()
   col.is_special = Parser.is_special_column(name)
 
   self._widths = nil
-  self:_rebuild_rows()
-  self:_render()
+  self:_after_columns_changed()
 end
 
 function ColumnView:delete_column()
@@ -1076,8 +1103,7 @@ function ColumnView:delete_column()
   if self.current_col > #self.columns then
     self.current_col = #self.columns
   end
-  self:_rebuild_rows()
-  self:_render()
+  self:_after_columns_changed()
 end
 
 function ColumnView:move_column_left()
@@ -1085,8 +1111,7 @@ function ColumnView:move_column_left()
     local col = table.remove(self.columns, self.current_col)
     table.insert(self.columns, self.current_col - 1, col)
     self.current_col = self.current_col - 1
-    self:_rebuild_rows()
-    self:_render()
+    self:_after_columns_changed()
   end
 end
 
@@ -1095,8 +1120,7 @@ function ColumnView:move_column_right()
     local col = table.remove(self.columns, self.current_col)
     table.insert(self.columns, self.current_col + 1, col)
     self.current_col = self.current_col + 1
-    self:_rebuild_rows()
-    self:_render()
+    self:_after_columns_changed()
   end
 end
 

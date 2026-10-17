@@ -976,6 +976,29 @@ function OrgFile:get_file_columns()
   return self:get_directive('COLUMNS')
 end
 
+---Store the given column format in the first `#+COLUMNS:` keyword, inserting
+---one before the first headline when the buffer has none. Mirrors the
+---file-level branch of Emacs' `org-columns-store-format`.
+---@param format string
+function OrgFile:set_file_columns(format)
+  local bufnr = self:get_valid_bufnr()
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local first_headline
+  for i, line in ipairs(lines) do
+    if not first_headline and line:match('^%*+ ') then
+      first_headline = i
+    end
+    local _, prefix_end = line:lower():find('^%s*#%+columns:')
+    if prefix_end then
+      vim.api.nvim_buf_set_lines(bufnr, i - 1, i, false, { line:sub(1, prefix_end) .. ' ' .. format })
+      return
+    end
+  end
+
+  local insert_at = (first_headline or 1) - 1
+  vim.api.nvim_buf_set_lines(bufnr, insert_at, insert_at, false, { '#+COLUMNS: ' .. format })
+end
+
 --- Get headline id or create a new one if it doesn't exist
 --- @return string
 function OrgFile:id_get_or_create()

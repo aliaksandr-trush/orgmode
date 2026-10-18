@@ -303,6 +303,68 @@ describe('Agenda Columns Type', function()
     assert.are.equal('[ ]', view.headlines[headline_index(view, 'Check Probe')]:get_property('status'))
   end)
 
+  it('cycles the TODO state with the todo action', function()
+    local view = build_view({ '* Todo Action Probe' }, {
+      overriding_columns_format = '%25ITEM %Effort',
+    })
+
+    view.current_row = headline_index(view, 'Todo Action Probe')
+    view.current_col = column_index(view, 'ITEM')
+    view:todo()
+
+    assert.are.equal('TODO', view.headlines[headline_index(view, 'Todo Action Probe')]:get_todo())
+  end)
+
+  it('follows the link in the current cell', function()
+    local view = build_view({ '* [[file:notes.org][Notes]]' }, {
+      overriding_columns_format = '%25ITEM',
+    })
+    local followed = {}
+    view._links = {
+      follow = function(_, url)
+        table.insert(followed, url)
+      end,
+    }
+
+    local row
+    for i, h in ipairs(view.headlines) do
+      if h:get_title():find('notes.org', 1, true) then
+        row = i
+        break
+      end
+    end
+    assert.is_not_nil(row)
+
+    view.current_row = row
+    view.current_col = column_index(view, 'ITEM')
+    view:open_link()
+
+    assert.are.equal('file:notes.org', followed[1])
+  end)
+
+  it('applies the value display function when rendering', function()
+    local original = config.opts.org_columns_modify_value_for_display_function
+    config.opts.org_columns_modify_value_for_display_function = function(column, value)
+      if column == 'Owner' and value ~= '' then
+        return value:upper()
+      end
+      return nil
+    end
+
+    local view = build_view({
+      '* Owner Probe',
+      ':PROPERTIES:',
+      ':Owner: alice',
+      ':END:',
+    }, {
+      overriding_columns_format = '%25ITEM %Owner(Owner)',
+    })
+    config.opts.org_columns_modify_value_for_display_function = original
+
+    local content = table.concat(render_lines(view), '\n')
+    assert.is_truthy(content:find('ALICE', 1, true))
+  end)
+
   it('edits allowed values with edit_allowed', function()
     local view = build_view({
       '* Curator Parent',

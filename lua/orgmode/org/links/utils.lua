@@ -1,6 +1,21 @@
 local utils = require('orgmode.utils')
 local link_utils = {}
 
+---Extract the first Org link from a string, mirroring the bracketed and plain
+---forms accepted by Emacs' `org-link-open-from-string`.
+---@param text string|nil
+---@return string|nil
+function link_utils.extract_link(text)
+  if not text then
+    return nil
+  end
+  local bracketed = text:match('%[%[([^%]]+)%]%]') or text:match('%[%[([^%]]+)%]')
+  if bracketed then
+    return bracketed
+  end
+  return text:match('([%a][%w+.-]*:[^%s]+)')
+end
+
 local external_filetypes = {
   -- pdf is considered a valid filetype even though it cannot be correctly read
   'pdf',

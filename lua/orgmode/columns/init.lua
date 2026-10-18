@@ -5,6 +5,7 @@ local Cells = require('orgmode.columns.cells')
 local Parser = require('orgmode.columns.parser')
 local Input = require('orgmode.ui.input')
 local Headline = require('orgmode.files.headline')
+local link_utils = require('orgmode.org.links.utils')
 
 ---Normalize a mapping definition (a single key or a list of keys) to a list.
 ---@param mapping string|string[]|nil
@@ -17,21 +18,6 @@ local function mapping_keys(mapping)
     return mapping
   end
   return {}
-end
-
----Extract the first Org link from a cell value, mirroring the bracketed and
----plain forms accepted by Emacs' `org-link-open-from-string`.
----@param text string|nil
----@return string|nil
-local function extract_link(text)
-  if not text then
-    return nil
-  end
-  local bracketed = text:match('%[%[([^%]]+)%]%]') or text:match('%[%[([^%]]+)%]')
-  if bracketed then
-    return bracketed
-  end
-  return text:match('([%a][%w+.-]*:[^%s]+)')
 end
 
 local ColumnView = {}
@@ -173,6 +159,10 @@ function ColumnView:_create_row(headline, level)
       column = col,
       value = value,
       summary = summary,
+      -- A value is computed when the column has a summary operator and the
+      -- entry has children to aggregate, mirroring Emacs'
+      -- `org-columns-check-computed`.
+      is_computed = col.summary_type ~= nil and headline:has_child_headlines(),
     })
   end
 
@@ -295,14 +285,15 @@ end
 ---@param cell OrgColumnViewCell
 ---@return string
 function ColumnView:_cell_content(cell)
+  local value = Cells.modify_value_for_display(cell.column.title, cell.value)
   if not cell.summary then
-    return cell.value
+    return value
   end
   local summary_text = 'Σ=' .. cell.summary
-  if cell.value == '' then
+  if value == '' then
     return summary_text
   end
-  return cell.value .. ' ' .. summary_text
+  return value .. ' ' .. summary_text
 end
 
 ---Compute the display width of every column, fitting both the header title and
@@ -626,7 +617,7 @@ function ColumnView:open_link()
   if not cell then
     return
   end
-  local url = extract_link(cell.value)
+  local url = link_utils.extract_link(cell.value)
   if not url then
     return utils.echo_warning('No link at point')
   end
@@ -677,6 +668,18 @@ function ColumnView:_allowed_values_for(col)
   return { '[ ]', '[X]' }
 end
 
+---Refuse to edit a cell whose value is computed from children, like Emacs'
+---`org-columns-check-computed`.
+---@param cell OrgColumnViewCell
+---@return boolean can_edit
+function ColumnView:_check_computed(cell)
+  if cell.is_computed then
+    utils.echo_warning("This value is computed from the entry's children")
+    return false
+  end
+  return true
+end
+
 function ColumnView:select_value(n)
   -- n is 1-9 or 0 (for 10th)
   if n == 0 then
@@ -688,7 +691,7 @@ function ColumnView:select_value(n)
   end
 
   local cell = row.cells[self.current_col]
-  if not cell then
+  if not cell or not self:_check_computed(cell) then
     return
   end
 
@@ -709,7 +712,7 @@ function ColumnView:_change_value(direction)
   end
 
   local cell = row.cells[self.current_col]
-  if not cell then
+  if not cell or not self:_check_computed(cell) then
     return
   end
 
@@ -926,6 +929,29 @@ function ColumnView:edit_allowed()
   utils.echo_info(('Allowed values for %s: %s'):format(col.name, table.concat(new_allowed, ', ')))
 end
 
+---Change the TODO state of the current row, like Emacs' `org-columns-todo`
+---(`C-c C-t`). Acts on the entry independent of the column under the cursor,
+---prompting with fast access when configured and cycling otherwise.
+function ColumnView:todo()
+  local row = self.rows[self.current_row]
+  if not row then
+    return
+  end
+  local cell = row.cells[self.current_col]
+  if cell and not self:_check_computed(cell) then
+    return
+  end
+  local headline = row.headline
+  local TodoState = require('orgmode.objects.todo_state')
+  local next_state = TodoState.next_or_fast_access(headline.file:get_todo_keywords(), headline:get_todo())
+  if next_state then
+    self:_write(function()
+      headline:set_todo(next_state.value)
+    end)
+    self:refresh()
+  end
+end
+
 ---Edit the value at point using appropriate interface for the column type
 function ColumnView:edit_value()
   local row = self.rows[self.current_row]
@@ -933,7 +959,7 @@ function ColumnView:edit_value()
     return
   end
   local cell = row.cells[self.current_col]
-  if not cell then
+  if not cell or not self:_check_computed(cell) then
     return
   end
 
@@ -1056,6 +1082,9 @@ function ColumnView:toggle_or_quit()
   -- Toggle a checkbox value. Only property columns can hold checkboxes; the
   -- ITEM column is the headline title and must not cycle the TODO state here.
   if not col.is_special and cell.value:match('^%s*%[.%]') then
+    if not self:_check_computed(cell) then
+      return
+    end
     local new_val = cell.value:gsub('%[(.)%]', function(inner)
       return inner:upper() == 'X' and '[ ]' or '[X]'
     end, 1)

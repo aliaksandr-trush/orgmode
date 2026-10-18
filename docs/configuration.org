@@ -2180,6 +2180,28 @@ has a =#+COLUMNS:= directive.
 Default column format for the agenda column view. Falls back to
 =org_columns_default_format= when nil.
 
+**** org_columns_modify_value_for_display_function
+:PROPERTIES:
+:CUSTOM_ID: org_columns_modify_value_for_display_function
+:END:
+- Type: =function | nil=
+- Default: =nil=
+Function called with the column title and value to produce the text shown in the
+column view (both overlay and agenda). It should accept =(column, value)= and
+return the string to display, or =nil= to keep the original value. Only the
+display is affected; the stored value is unchanged.
+
+#+begin_src lua
+require('orgmode').setup({
+  org_columns_modify_value_for_display_function = function(column, value)
+    if column == 'TODO' and value == 'DONE' then
+      return '✓'
+    end
+    return nil
+  end,
+})
+#+end_src
+
 **** org_agenda_overriding_columns_format
 :PROPERTIES:
 :CUSTOM_ID: org_agenda_overriding_columns_format

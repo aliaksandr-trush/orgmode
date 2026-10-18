@@ -526,6 +526,10 @@ return {
       'org_mappings.org_columns_open_link',
       { opts = { desc = 'org column view open link', help_desc = 'Open link at point' } }
     ),
+    todo = m.action(
+      'org_mappings.org_columns_todo',
+      { opts = { desc = 'org column view todo', help_desc = 'Change TODO state' } }
+    ),
     show_help = m.action(
       'org_mappings.show_help',
       { args = { 'column_view' }, opts = { desc = 'org show help', help_desc = 'Show this help' } }

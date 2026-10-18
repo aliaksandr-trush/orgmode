@@ -678,6 +678,7 @@ describe('ColumnView', function()
     assert.are.equal('c', maps.content.default_map)
     assert.are.equal('o', maps.overview.default_map)
     assert.are.same({ '<C-c><C-o>', '<prefix>o' }, maps.open_link.default_map)
+    assert.are.same({ '<C-c><C-t>', '<prefix>t' }, maps.todo.default_map)
     assert.are.equal('g?', maps.show_help.default_map)
     assert.are.same({ '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' }, maps.select_value.default_map)
   end)
@@ -710,6 +711,51 @@ describe('ColumnView', function()
     assert.is_false(has_lhs(' oo'))
 
     vim.g.mapleader = original_leader
+  end)
+
+  it('binds and tears down both todo keys, expanding the prefix', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM',
+      ':END:',
+    })
+    local original_leader = vim.g.mapleader
+    vim.g.mapleader = ' '
+    view:open()
+
+    local function has_lhs(target)
+      for _, m in ipairs(vim.api.nvim_buf_get_keymap(view.bufnr, 'n')) do
+        if m.lhs == target then
+          return true
+        end
+      end
+      return false
+    end
+
+    assert.is_true(has_lhs('<C-C><C-T>'))
+    assert.is_true(has_lhs(' ot'))
+
+    view:quit()
+    assert.is_false(has_lhs('<C-C><C-T>'))
+    assert.is_false(has_lhs(' ot'))
+
+    vim.g.mapleader = original_leader
+  end)
+
+  it('has a handler method for every column view action', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM',
+      ':END:',
+    })
+    local maps = config:get_mappings('column_view', view.bufnr)
+    for name, map in pairs(maps) do
+      if map.map_entry and name ~= 'select_value' then
+        assert.is_function(view[name], ('missing ColumnView handler for %s'):format(name))
+      end
+    end
   end)
 
   it('includes column view mappings in help content', function()
@@ -1091,5 +1137,123 @@ describe('ColumnView', function()
     view.current_col = 2
     view:open_link()
     assert.are.equal('https://example.com', followed[1])
+  end)
+
+  it('refuses to edit cells computed from children', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM %10Effort{+}',
+      ':END:',
+      '** Child',
+      ':PROPERTIES:',
+      ':Effort: 1:00',
+      ':END:',
+    })
+
+    assert.is_true(view.rows[1].cells[2].is_computed)
+    assert.is_false(view.rows[2].cells[2].is_computed)
+
+    view.current_row = 1
+    view.current_col = 2
+    view:select_value(1)
+
+    assert.is_nil(view.rows[1].headline:get_property('effort'))
+  end)
+
+  it('applies the value display function when rendering', function()
+    local original = config.opts.org_columns_modify_value_for_display_function
+    config.opts.org_columns_modify_value_for_display_function = function(column, value)
+      if column == 'Owner' and value ~= '' then
+        return value:upper()
+      end
+      return nil
+    end
+
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %10Owner(Owner)',
+      ':Owner: alice',
+      ':END:',
+    })
+
+    assert.are.equal('ALICE', view:_cell_content(view.rows[1].cells[1]))
+    -- The stored value is unchanged.
+    assert.are.equal('alice', view.rows[1].cells[1].value)
+
+    config.opts.org_columns_modify_value_for_display_function = original
+  end)
+
+  it('cycles the TODO state via the todo action without fast access', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM',
+      ':END:',
+    })
+    local TodoState = require('orgmode.objects.todo_state')
+    local original_has = TodoState.has_fast_access
+    local original_open = TodoState.open_fast_access
+    local prompted = false
+    TodoState.has_fast_access = function()
+      return false
+    end
+    TodoState.open_fast_access = function()
+      prompted = true
+      return { value = 'DONE' }
+    end
+
+    view.current_row = 1
+    view:todo()
+
+    TodoState.has_fast_access = original_has
+    TodoState.open_fast_access = original_open
+    assert.is_false(prompted)
+    assert.are.equal('TODO', view.rows[1].headline:get_todo())
+  end)
+
+  it('prompts with fast access via the todo action when configured', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM',
+      ':END:',
+    })
+    local TodoState = require('orgmode.objects.todo_state')
+    local original_has = TodoState.has_fast_access
+    local original_open = TodoState.open_fast_access
+    TodoState.has_fast_access = function()
+      return true
+    end
+    TodoState.open_fast_access = function()
+      return { value = 'DONE' }
+    end
+
+    view.current_row = 1
+    view:todo()
+
+    TodoState.has_fast_access = original_has
+    TodoState.open_fast_access = original_open
+    assert.are.equal('DONE', view.rows[1].headline:get_todo())
+  end)
+
+  it('refuses the todo action when the column under the cursor is computed', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM %10Effort{+}',
+      ':END:',
+      '** Child',
+      ':PROPERTIES:',
+      ':Effort: 1:00',
+      ':END:',
+    })
+
+    view.current_row = 1
+    view.current_col = 2
+    view:todo()
+
+    assert.is_nil(view.rows[1].headline:get_todo())
   end)
 end)

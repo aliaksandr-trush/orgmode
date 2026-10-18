@@ -10,6 +10,7 @@ local SortingStrategy = require('orgmode.agenda.sorting_strategy')
 local Promise = require('orgmode.utils.promise')
 local utils = require('orgmode.utils')
 local Input = require('orgmode.ui.input')
+local link_utils = require('orgmode.org.links.utils')
 
 ---Extmarks marking the currently selected cell.
 local ns = vim.api.nvim_create_namespace('orgmode_agenda_columns')
@@ -36,6 +37,8 @@ local COLUMN_ACTIONS = {
   move_column_right = true,
   edit_attributes = true,
   refresh = true,
+  open_link = true,
+  todo = true,
   show_help = true,
 }
 
@@ -333,6 +336,16 @@ function OrgAgendaColumnsType:_cell_value(headline, column)
   return self.cells:get_value(headline, column)
 end
 
+---Value used for display, honoring
+---`org_columns_modify_value_for_display_function`. Editing reads `_cell_value`
+---so the stored value stays untouched.
+---@param headline OrgHeadline
+---@param column OrgColumnSpec
+---@return string
+function OrgAgendaColumnsType:_display_value(headline, column)
+  return Cells.modify_value_for_display(column.title, self:_cell_value(headline, column))
+end
+
 ---@param bufnr? number
 function OrgAgendaColumnsType:render(bufnr)
   self.bufnr = bufnr or 0
@@ -368,7 +381,7 @@ function OrgAgendaColumnsType:_render()
   }))
 
   local widths = Cells.compute_widths(self.columns, function(headline, col)
-    return self:_cell_value(headline, col)
+    return self:_display_value(headline, col)
   end, self.headlines)
   self._widths = widths
 
@@ -414,7 +427,7 @@ function OrgAgendaColumnsType:_build_row(headline, widths)
   })
   for col_idx, col in ipairs(self.columns) do
     line:add_token(AgendaLineToken:new({ content = '│', hl_group = '@org.column.border' }))
-    local value = self:_cell_value(headline, col)
+    local value = self:_display_value(headline, col)
     line:add_token(AgendaLineToken:new({
       content = ' ' .. Cells.fit(value, widths[col_idx]) .. ' ',
       hl_group = '@org.column.value',
@@ -821,6 +834,44 @@ function OrgAgendaColumnsType:view_value()
     return
   end
   utils.echo_info(self:_cell_value(headline, col), nil, true)
+end
+
+---@private
+function OrgAgendaColumnsType:_get_links()
+  if not self._links then
+    self._links = require('orgmode.org.links'):new({ files = self.files })
+  end
+  return self._links
+end
+
+---Follow the first link found in the current cell, like Emacs'
+---`org-columns-open-link` (`C-c C-o`).
+function OrgAgendaColumnsType:open_link()
+  local headline = self:_current_headline()
+  local col = self:_current_column()
+  if not headline or not col then
+    return
+  end
+  local url = link_utils.extract_link(self:_cell_value(headline, col))
+  if not url then
+    return utils.echo_warning('No link at point')
+  end
+  self:_get_links():follow(url)
+end
+
+---Change the TODO state of the current row, like Emacs' `org-columns-todo`
+---(`C-c C-t`). Acts on the entry independent of the column under the cursor,
+---prompting with fast access when configured and cycling otherwise.
+function OrgAgendaColumnsType:todo()
+  local headline = self:_current_headline()
+  if not headline then
+    return
+  end
+  local TodoState = require('orgmode.objects.todo_state')
+  local next_state = TodoState.next_or_fast_access(headline.file:get_todo_keywords(), headline:get_todo())
+  if next_state then
+    self:_apply_value(headline, { name = 'TODO', is_special = true }, next_state.value)
+  end
 end
 
 function OrgAgendaColumnsType:toggle_or_quit()

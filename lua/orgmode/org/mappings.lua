@@ -313,6 +313,13 @@ function OrgMappings:org_columns_open_link()
   end
 end
 
+function OrgMappings:org_columns_todo()
+  local view = self:_get_column_view()
+  if view then
+    view:todo()
+  end
+end
+
 ---@param tags? string|string[]
 function OrgMappings:set_tags(tags)
   local headline = self.files:get_closest_headline()

@@ -31,6 +31,19 @@ function TodoState:open_fast_access()
   return self:_open_fast_access_echo()
 end
 
+---Return the next TODO keyword, mirroring `org-todo`: prompt with fast access
+---when it is configured for `todos`, otherwise cycle to the next state.
+---@param todos OrgTodoKeywords
+---@param current_state string | nil
+---@return OrgTodoKeyword | nil
+function TodoState.next_or_fast_access(todos, current_state)
+  local ts = TodoState:new({ current_state = current_state, todos = todos })
+  if ts:has_fast_access() then
+    return ts:open_fast_access()
+  end
+  return ts:get_next()
+end
+
 --- Delegates to the configurable menu handler so UI plugins can render the
 --- prompt in a window instead of the message area.
 ---@private

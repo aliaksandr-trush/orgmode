@@ -226,6 +226,7 @@
 ---@field org_agenda_hide_empty_blocks? boolean Hide empty custom agenda commands in agenda view. Default: false
 ---@field org_agenda_custom_commands? table<string, OrgAgendaCustomCommand> Custom commands for the agenda view. Default: {}
 ---@field org_columns_default_format_for_agenda? string Default column format for agenda column view. Default: nil (falls back to org_columns_default_format)
+---@field org_columns_modify_value_for_display_function? fun(column: string|nil, value: string): string|nil Function called with the column title and value to produce the text displayed in column view. Return nil to keep the original value. Default: nil
 ---@field org_agenda_overriding_columns_format? string Column format override for agenda column view. Default: nil
 ---@field org_agenda_block_separator? string Separator for blocks in the agenda view. Default: '-'
 ---@field org_agenda_sorting_strategy? table<'agenda' | 'todo' | 'tags', OrgAgendaSortingStrategy[]> Sorting strategy for the agenda view. See docs for default value

@@ -60,6 +60,7 @@ local DefaultConfig = {
   org_highlight_latex_and_related = nil,
   org_columns_default_format = '%25ITEM %10Effort(Effort){:} %10CLOCKSUM %10CLOCKSUM_T %10Tags %10TODO',
   org_columns_default_format_for_agenda = nil,
+  org_columns_modify_value_for_display_function = nil,
   org_agenda_overriding_columns_format = nil,
   org_custom_exports = {},
   org_adapt_indentation = true,
@@ -240,6 +241,7 @@ local DefaultConfig = {
       content = 'c',
       overview = 'o',
       open_link = { '<C-c><C-o>', '<prefix>o' },
+      todo = { '<C-c><C-t>', '<prefix>t' },
       show_help = 'g?',
     },
     text_objects = {

@@ -2,6 +2,7 @@ local Date = require('orgmode.objects.date')
 local Duration = require('orgmode.objects.duration')
 local Summary = require('orgmode.columns.summary')
 local utils = require('orgmode.utils')
+local config = require('orgmode.config')
 
 ---Compute and render individual column values shared between the overlay
 ---column view (org buffer) and the agenda column view.
@@ -259,6 +260,24 @@ end
 ---@return string|nil
 function Cells.compute_summary(values, summary_type)
   return Summary.compute(values, summary_type)
+end
+
+---Apply `org_columns_modify_value_for_display_function` to a value before it is
+---rendered, like Emacs' `org-columns-modify-value-for-display-function`. The
+---function receives the column title and the value, and should return the text
+---to display (or nil to keep the original value).
+---@param column string|nil
+---@param value string
+---@return string
+function Cells.modify_value_for_display(column, value)
+  local fn = config.org_columns_modify_value_for_display_function
+  if type(fn) == 'function' then
+    local modified = fn(column, value)
+    if modified ~= nil then
+      return modified
+    end
+  end
+  return value
 end
 
 return Cells

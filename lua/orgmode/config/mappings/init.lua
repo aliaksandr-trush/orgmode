@@ -514,6 +514,18 @@ return {
       'org_mappings.org_columns_refresh',
       { opts = { desc = 'org refresh column view', help_desc = 'Refresh column view' } }
     ),
+    content = m.action(
+      'org_mappings.org_columns_content',
+      { opts = { desc = 'org column view content', help_desc = 'Switch to content view' } }
+    ),
+    overview = m.action(
+      'org_mappings.org_columns_overview',
+      { opts = { desc = 'org column view overview', help_desc = 'Switch to overview' } }
+    ),
+    open_link = m.action(
+      'org_mappings.org_columns_open_link',
+      { opts = { desc = 'org column view open link', help_desc = 'Open link at point' } }
+    ),
     show_help = m.action(
       'org_mappings.show_help',
       { args = { 'column_view' }, opts = { desc = 'org show help', help_desc = 'Show this help' } }

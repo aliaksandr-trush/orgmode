@@ -19,6 +19,21 @@ local function mapping_keys(mapping)
   return {}
 end
 
+---Extract the first Org link from a cell value, mirroring the bracketed and
+---plain forms accepted by Emacs' `org-link-open-from-string`.
+---@param text string|nil
+---@return string|nil
+local function extract_link(text)
+  if not text then
+    return nil
+  end
+  local bracketed = text:match('%[%[([^%]]+)%]%]') or text:match('%[%[([^%]]+)%]')
+  if bracketed then
+    return bracketed
+  end
+  return text:match('([%a][%w+.-]*:[^%s]+)')
+end
+
 local ColumnView = {}
 ColumnView.__index = ColumnView
 
@@ -29,6 +44,7 @@ function ColumnView:new(opts)
   local track_ns = vim.api.nvim_create_namespace('orgmode_column_view_track')
   local data = {
     files = opts.files,
+    links = opts.links,
     headlines = opts.headlines or {},
     file = opts.headlines and opts.headlines[1] and opts.headlines[1].file or nil,
     subtree = opts.subtree or false,
@@ -573,6 +589,51 @@ function ColumnView:move_row_down()
   self:_move_row(1)
 end
 
+---Run `fn` in the column view window so window-local fold operations target it.
+---@param fn fun()
+---@private
+function ColumnView:_fold(fn)
+  local win = self.winid
+  if win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == self.bufnr then
+    vim.api.nvim_win_call(win, fn)
+  else
+    fn()
+  end
+end
+
+---Fold to overview, showing only headlines, like Emacs `org-overview` (`o`).
+function ColumnView:overview()
+  self:_fold(function()
+    vim.wo.foldenable = true
+    vim.cmd('silent! normal! zMzX')
+  end)
+end
+
+---Show headline contents, like Emacs `org-columns-content` (`c`).
+function ColumnView:content()
+  self:_fold(function()
+    vim.wo.foldenable = true
+    vim.wo.foldlevel = 1
+    vim.cmd('silent! normal! zx')
+  end)
+end
+
+---Follow the first link found in the current cell, like Emacs
+---`org-columns-open-link` (`C-c C-o`).
+function ColumnView:open_link()
+  local row = self.rows[self.current_row]
+  local cell = row and row.cells[self.current_col]
+  if not cell then
+    return
+  end
+  local url = extract_link(cell.value)
+  if not url then
+    return utils.echo_warning('No link at point')
+  end
+  local links = self.links or require('orgmode.org.links'):new({ files = self.files })
+  links:follow(url)
+end
+
 function ColumnView:next_value()
   self:_change_value(1)
 end
@@ -755,9 +816,14 @@ function ColumnView:quit()
     for _, map in pairs(maps) do
       if map.map_entry then
         -- Try both default_map and user_map, as the actual key might be either.
-        -- Mappings can be a single key or a list of keys.
+        -- Mappings can be a single key or a list of keys. `attach` expands the
+        -- `<prefix>` placeholder, so expand it here too to delete the real key.
+        local prefix = map.opts and map.opts.prefix
         for _, keys in ipairs({ mapping_keys(map.default_map), mapping_keys(map.user_map) }) do
           for _, key in ipairs(keys) do
+            if prefix then
+              key = key:gsub('<prefix>', prefix)
+            end
             pcall(vim.keymap.del, 'n', key, { buffer = self.bufnr })
           end
         end

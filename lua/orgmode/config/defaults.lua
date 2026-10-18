@@ -237,6 +237,9 @@ local DefaultConfig = {
       move_row_down = '<M-Down>',
       edit_attributes = 's',
       refresh = 'r',
+      content = 'c',
+      overview = 'o',
+      open_link = { '<C-c><C-o>', '<prefix>o' },
       show_help = 'g?',
     },
     text_objects = {

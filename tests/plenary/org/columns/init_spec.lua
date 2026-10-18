@@ -675,8 +675,41 @@ describe('ColumnView', function()
     assert.are.equal('<M-Down>', maps.move_row_down.default_map)
     assert.are.equal('s', maps.edit_attributes.default_map)
     assert.are.equal('r', maps.refresh.default_map)
+    assert.are.equal('c', maps.content.default_map)
+    assert.are.equal('o', maps.overview.default_map)
+    assert.are.same({ '<C-c><C-o>', '<prefix>o' }, maps.open_link.default_map)
     assert.are.equal('g?', maps.show_help.default_map)
     assert.are.same({ '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' }, maps.select_value.default_map)
+  end)
+
+  it('binds and tears down both open link keys, expanding the prefix', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM',
+      ':END:',
+    })
+    local original_leader = vim.g.mapleader
+    vim.g.mapleader = ' '
+    view:open()
+
+    local function has_lhs(target)
+      for _, m in ipairs(vim.api.nvim_buf_get_keymap(view.bufnr, 'n')) do
+        if m.lhs == target then
+          return true
+        end
+      end
+      return false
+    end
+
+    assert.is_true(has_lhs('<C-C><C-O>'))
+    assert.is_true(has_lhs(' oo'))
+
+    view:quit()
+    assert.is_false(has_lhs('<C-C><C-O>'))
+    assert.is_false(has_lhs(' oo'))
+
+    vim.g.mapleader = original_leader
   end)
 
   it('includes column view mappings in help content', function()
@@ -995,5 +1028,68 @@ describe('ColumnView', function()
 
     vim.cmd('normal! zE')
     vim.cmd('setlocal foldmethod=expr')
+  end)
+
+  it('switches between overview and content views', function()
+    local view = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM',
+      ':END:',
+      '** Child',
+    })
+    vim.api.nvim_set_current_buf(view.bufnr)
+    vim.cmd('setlocal foldmethod=manual')
+    view.winid = vim.api.nvim_get_current_win()
+
+    view:overview()
+    assert.is_true(vim.wo.foldenable)
+
+    view:content()
+    assert.is_true(vim.wo.foldenable)
+    assert.are.equal(1, vim.wo.foldlevel)
+
+    vim.cmd('setlocal foldmethod=expr')
+  end)
+
+  it('opens the bracketed link in the current cell', function()
+    local view = create_view({
+      '* [[file:notes.org][Notes]]',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM',
+      ':END:',
+    })
+    local followed = {}
+    view.links = {
+      follow = function(_, url)
+        table.insert(followed, url)
+      end,
+    }
+
+    view.current_row = 1
+    view.current_col = 1
+    view:open_link()
+    assert.are.equal('file:notes.org', followed[1])
+  end)
+
+  it('opens the plain link in the current cell', function()
+    local view = create_view({
+      '* Meeting',
+      ':PROPERTIES:',
+      ':COLUMNS: %ITEM %10Link',
+      ':Link: https://example.com',
+      ':END:',
+    })
+    local followed = {}
+    view.links = {
+      follow = function(_, url)
+        table.insert(followed, url)
+      end,
+    }
+
+    view.current_row = 1
+    view.current_col = 2
+    view:open_link()
+    assert.are.equal('https://example.com', followed[1])
   end)
 end)

@@ -536,24 +536,72 @@ function ColumnView:_move_row(direction)
   local target_line = direction < 0 and sibling:get_range().start_line - 1 or sibling:get_range().end_line
 
   local mark_id = vim.api.nvim_buf_set_extmark(self.bufnr, self.track_ns, range.start_line - 1, 0, {})
-  -- `:move` silently does nothing when part of the range is inside a closed
-  -- fold, so open folds for the duration of the move and restore them after.
   local win = self.winid
-  local restore_foldenable = nil
-  if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == self.bufnr then
-    restore_foldenable = vim.wo[win].foldenable
-    vim.wo[win].foldenable = false
-  end
-  self:_write(function()
-    vim.api.nvim_buf_call(self.bufnr, function()
-      vim.cmd(string.format(':%d,%dmove %d', range.start_line, range.end_line, target_line))
+  local win_ok = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == self.bufnr
+
+  -- `:move` reopens the folds contained in the range it moves (folds at the
+  -- destination are left alone). A subtree range never partially overlaps a
+  -- closed fold, so `:move` still works; remember which folds were closed and
+  -- re-close them at their shifted position afterwards.
+  local closed_folds = {}
+  if win_ok then
+    vim.api.nvim_win_call(win, function()
+      for line = range.start_line, range.end_line do
+        if vim.fn.foldclosed(line) == line then
+          table.insert(closed_folds, line)
+        end
+      end
     end)
-  end)
-  if restore_foldenable ~= nil and vim.api.nvim_win_is_valid(win) then
+  end
+
+  local function do_move()
+    self:_write(function()
+      vim.api.nvim_buf_call(self.bufnr, function()
+        vim.cmd(string.format(':%d,%dmove %d', range.start_line, range.end_line, target_line))
+      end)
+    end)
+  end
+  local changedtick = vim.api.nvim_buf_get_changedtick(self.bufnr)
+  do_move()
+  -- `:move` does nothing when the range partially overlaps a closed fold. That
+  -- cannot happen for a fully visible subtree, but fall back to moving with
+  -- folding disabled if it ever does.
+  if vim.api.nvim_buf_get_changedtick(self.bufnr) == changedtick and win_ok then
+    local restore_foldenable = vim.wo[win].foldenable
+    vim.wo[win].foldenable = false
+    do_move()
     vim.wo[win].foldenable = restore_foldenable
   end
 
   self:_reload_headlines()
+
+  -- The folds reopened by `:move` have to be re-closed once the fold structure
+  -- has been recomputed for the moved text (for `foldmethod=expr` this happens
+  -- on the next redraw); re-closing earlier would target the stale fold.
+  local new_start = target_line < range.start_line and target_line + 1
+    or target_line - (range.end_line - range.start_line)
+  if win_ok and #closed_folds > 0 then
+    local delta = new_start - range.start_line
+    vim.schedule(function()
+      if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= self.bufnr then
+        return
+      end
+      vim.api.nvim_win_call(win, function()
+        local cursor = vim.api.nvim_win_get_cursor(win)
+        for _, line in ipairs(closed_folds) do
+          local target = line + delta
+          vim.wait(200, function()
+            return vim.fn.foldlevel(target) > 0
+          end, 5)
+          if vim.fn.foldlevel(target) > 0 and vim.fn.foldclosed(target) == -1 then
+            vim.fn.cursor(target, 1)
+            vim.cmd('silent! normal! zc')
+          end
+        end
+        vim.fn.cursor(cursor)
+      end)
+    end)
+  end
   self:_rebuild_rows()
   self:_render()
 

@@ -470,6 +470,8 @@ describe('ColumnView', function()
       '** Child 1',
       '** Child 2',
     })
+    vim.wo.foldmethod = 'manual'
+    vim.cmd('normal! zE')
 
     view.current_row = 2
     view.current_col = 1
@@ -491,6 +493,8 @@ describe('ColumnView', function()
       '** Child 1',
       '** Child 2',
     })
+    vim.wo.foldmethod = 'manual'
+    vim.cmd('normal! zE')
 
     view.current_row = 3
     view.current_col = 1
@@ -511,6 +515,8 @@ describe('ColumnView', function()
       '** Child 1',
       '** Child 2',
     })
+    vim.wo.foldmethod = 'manual'
+    vim.cmd('normal! zE')
 
     view.current_row = 2
     view.current_col = 1
@@ -519,6 +525,63 @@ describe('ColumnView', function()
     local lines = vim.api.nvim_buf_get_lines(file:bufnr(), 4, 6, false)
     assert.are.same({ '** Child 1', '** Child 2' }, lines)
     assert.are.equal(2, view.current_row)
+  end)
+
+  it('moves a row whose range is inside a closed fold', function()
+    local view, file = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %25ITEM',
+      ':END:',
+      '** Child 1',
+      '** Child 2',
+    })
+
+    view.current_row = 2
+    view.current_col = 1
+    view:move_row_down()
+
+    local lines = vim.api.nvim_buf_get_lines(file:bufnr(), 4, 6, false)
+    assert.are.same({ '** Child 2', '** Child 1' }, lines)
+  end)
+
+  it('keeps closed folds when moving a row', function()
+    local view, file = create_view({
+      '* Parent',
+      ':PROPERTIES:',
+      ':COLUMNS: %25ITEM',
+      ':END:',
+      '** Child 1',
+      ':PROPERTIES:',
+      ':ID: 1',
+      ':END:',
+      '** Child 2',
+    })
+
+    vim.api.nvim_set_current_buf(file:bufnr())
+    view.winid = vim.api.nvim_get_current_win()
+    vim.wo.foldmethod = 'expr'
+    vim.wo.foldlevel = 99
+    vim.cmd('normal! zR')
+
+    -- Close Child 1's drawer, leaving the rest open.
+    vim.api.nvim_win_set_cursor(0, { 6, 0 })
+    vim.cmd('normal! zc')
+    assert.are.equal(6, vim.fn.foldclosed(6))
+
+    view.current_row = 2
+    view.current_col = 1
+    view:move_row_down()
+
+    -- The fold is restored asynchronously, after the fold structure is
+    -- recomputed for the moved text.
+    vim.wait(500, function()
+      return vim.fn.foldclosed(7) == 7
+    end, 10)
+
+    assert.are.equal(7, vim.fn.foldclosed(7))
+    assert.are.equal(-1, vim.fn.foldclosed(1))
+    assert.are.equal(-1, vim.fn.foldclosed(5))
   end)
 
   it('refreshes the view from the current file state', function()

@@ -240,11 +240,8 @@ end
 function Cells.compute_widths(columns, content, headlines)
   local widths = {}
   for col_idx, col in ipairs(columns) do
-    local width
-    if col.width then
-      width = col.width
-    else
-      width = math.max(vim.api.nvim_strwidth(col.title or ''), 10)
+    local width = col.width or math.max(vim.api.nvim_strwidth(col.title or ''), 10)
+    if not col.width then
       for _, headline in ipairs(headlines) do
         local value = content(headline, col)
         width = math.max(width, vim.api.nvim_strwidth(type(value) == 'string' and value or ''))

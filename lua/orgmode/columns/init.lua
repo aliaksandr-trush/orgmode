@@ -1004,6 +1004,7 @@ function ColumnView:edit_value()
         cell.value = self:_get_cell_value(headline, col)
         self:refresh()
       end
+      return tags
     end)
   end
 
@@ -1042,9 +1043,9 @@ function ColumnView:edit_value()
       local choice = vim.fn.input(prompt)
       local idx = tonumber(choice)
       if idx and idx >= 1 and idx <= #items then
-        local choice = items[idx]
+        local selected = items[idx]
         self:_write(function()
-          headline:set_property(prop_name, choice)
+          headline:set_property(prop_name, selected)
         end)
         cell.value = self:_get_cell_value(headline, col)
         self:refresh()

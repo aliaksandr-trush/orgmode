@@ -305,11 +305,12 @@ function Config:get_inheritable_tags(headline)
   end, headline.tags)
 end
 
+---@return { highest: string, default: string, lowest: string }
 function Config:get_priority_range()
   return {
-    highest = self.org_priority_highest,
-    default = self.org_priority_default,
-    lowest = self.org_priority_lowest,
+    highest = tostring(self.org_priority_highest),
+    default = tostring(self.org_priority_default),
+    lowest = tostring(self.org_priority_lowest),
   }
 end
 
